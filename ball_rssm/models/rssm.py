@@ -47,12 +47,17 @@ class RSSM(nn.Module):
         std = torch.ones(batch_size, self.stoch_dim, device=device)
         return RSSMState(h=h, z=z, mean=mean, std=std)
 
-    def img_step(self, prev_state: RSSMState, action: torch.Tensor) -> tuple[RSSMState, Independent]:
+    def img_step(
+        self,
+        prev_state: RSSMState,
+        action: torch.Tensor,
+        deterministic: bool = False,
+    ) -> tuple[RSSMState, Independent]:
         x = torch.cat([prev_state.z, action], dim=-1)
         h = self.gru(x, prev_state.h)
         mean, std = self._stats(self.prior_net(h))
         dist = self._dist(mean, std)
-        z = dist.rsample()
+        z = mean if deterministic else dist.rsample()
         return RSSMState(h=h, z=z, mean=mean, std=std), dist
 
     def obs_step(
@@ -95,12 +100,17 @@ class RSSM(nn.Module):
             "last_state": post_states[-1],
         }
 
-    def imagine(self, start_state: RSSMState, action_seq: torch.Tensor) -> dict[str, object]:
+    def imagine(
+        self,
+        start_state: RSSMState,
+        action_seq: torch.Tensor,
+        deterministic: bool = False,
+    ) -> dict[str, object]:
         prev = start_state
         states: list[RSSMState] = []
         dists: list[Independent] = []
         for t in range(action_seq.shape[1]):
-            prev, dist = self.img_step(prev, action_seq[:, t])
+            prev, dist = self.img_step(prev, action_seq[:, t], deterministic=deterministic)
             states.append(prev)
             dists.append(dist)
         return {"prior": stack_states(states), "prior_dists": dists, "last_state": prev}
@@ -112,6 +122,15 @@ class RSSM(nn.Module):
     @staticmethod
     def _dist(mean: torch.Tensor, std: torch.Tensor) -> Independent:
         return Independent(Normal(mean, std), 1)
+
+
+def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
+    return RSSMState(
+        h=state.h.repeat(repeats, 1),
+        z=state.z.repeat(repeats, 1),
+        mean=state.mean.repeat(repeats, 1),
+        std=state.std.repeat(repeats, 1),
+    )
 
 
 def stack_states(states: list[RSSMState]) -> dict[str, torch.Tensor]:

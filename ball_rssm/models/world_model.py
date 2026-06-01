@@ -126,6 +126,33 @@ class WorldModel(nn.Module):
         assert isinstance(prior, dict)
         return self.decode_features(prior["h"], prior["z"])
 
+    def encode_obs(self, obs_norm: torch.Tensor) -> torch.Tensor:
+        return self.encoder(obs_norm)
+
+    def initial_state(self, batch_size: int, device: torch.device | str) -> RSSMState:
+        return self.rssm.init_state(batch_size, device)
+
+    def posterior_update(
+        self,
+        prev_state: RSSMState,
+        prev_action_norm: torch.Tensor,
+        obs_norm: torch.Tensor,
+    ) -> RSSMState:
+        embed = self.encode_obs(obs_norm)
+        posterior, _, _, _ = self.rssm.obs_step(prev_state, prev_action_norm, embed)
+        return posterior
+
+    def imagine_rollout(
+        self,
+        start_state: RSSMState,
+        action_seq_norm: torch.Tensor,
+        deterministic: bool = True,
+    ) -> dict[str, object]:
+        return self.rssm.imagine(start_state, action_seq_norm, deterministic=deterministic)
+
+    def decode_state_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self.decode_features(states["h"], states["z"])
+
     def decode_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])

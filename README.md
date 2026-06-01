@@ -178,3 +178,68 @@ Prediction modes:
 - One-step prior prediction predicts `z_t` from the previous latent state and previous action, then compares against `obs_t`.
 - Multi-step open-loop prediction warms up the posterior for a context window, then rolls forward using only future actions and the RSSM prior.
 - Open-loop prediction is the important dynamics test because future observations are not provided to the model.
+
+## Milestone 3: RSSM + CEM/MPC
+
+Train an RSSM checkpoint first. MPC does not retrain the model; it only uses the frozen checkpoint for planning.
+
+Center stabilization:
+
+```bash
+python scripts/run_rssm_mpc_center.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --num-episodes 5 \
+  --max-steps 300 \
+  --horizon 25
+```
+
+Fixed target stabilization:
+
+```bash
+python scripts/run_rssm_mpc_viapoint.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --target-x 0.15 \
+  --target-y -0.10
+```
+
+Evaluate many random initial conditions:
+
+```bash
+python scripts/eval_rssm_mpc.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --mode center \
+  --num-episodes 50
+```
+
+Compare PD against RSSM MPC:
+
+```bash
+python scripts/compare_pd_vs_rssm_mpc.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt
+```
+
+Visualize a closed-loop MPC rollout:
+
+```bash
+python scripts/visualize_mpc_rollout.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --out-dir runs/rssm_ball_v0/mpc_visualization
+```
+
+MPC loop:
+
+```text
+real obs_t -> posterior update -> CEM samples future actions
+-> RSSM prior rollout -> decode predicted observations
+-> cost on denormalized predictions -> execute first action only
+-> replan at next real step
+```
+
+Important details:
+
+- CEM optimizes future action sequences under the learned world model.
+- MPC executes only the first action and replans every environment step.
+- Posterior update uses real observations up to the current step.
+- Future rollout during planning uses RSSM prior imagination only.
+- Candidate actions are normalized before entering RSSM.
+- Predicted observations are denormalized before computing costs.

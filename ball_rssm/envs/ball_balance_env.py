@@ -104,15 +104,17 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
-        del options
 
         cfg = self.config
         self.step_count = 0
-        x = self.np_random.uniform(-cfg.init_pos_range, cfg.init_pos_range)
-        y = self.np_random.uniform(-cfg.init_pos_range, cfg.init_pos_range)
-        vx = self.np_random.uniform(-cfg.init_vel_range, cfg.init_vel_range)
-        vy = self.np_random.uniform(-cfg.init_vel_range, cfg.init_vel_range)
-        self.state = np.array([x, y, vx, vy, 0.0, 0.0], dtype=np.float64)
+        if options is not None and "state" in options:
+            self.set_state(np.asarray(options["state"], dtype=np.float64))
+        else:
+            x = self.np_random.uniform(-cfg.init_pos_range, cfg.init_pos_range)
+            y = self.np_random.uniform(-cfg.init_pos_range, cfg.init_pos_range)
+            vx = self.np_random.uniform(-cfg.init_vel_range, cfg.init_vel_range)
+            vy = self.np_random.uniform(-cfg.init_vel_range, cfg.init_vel_range)
+            self.state = np.array([x, y, vx, vy, 0.0, 0.0], dtype=np.float64)
 
         obs = self._get_obs()
         info = self._make_info(
@@ -120,6 +122,12 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             action_clipped=np.zeros(2, dtype=np.float32),
         )
         return obs, info
+
+    def set_state(self, state: np.ndarray) -> None:
+        state = np.asarray(state, dtype=np.float64)
+        if state.shape != (6,):
+            raise ValueError("state must have shape (6,)")
+        self.state = state.copy()
 
     def step(
         self,
