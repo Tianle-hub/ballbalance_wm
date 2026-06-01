@@ -24,9 +24,10 @@ dist/
 *.egg
 
 # Local datasets and generated artifacts
-data/
-outputs/
-artifacts/
+/data/
+/runs/
+/outputs/
+/artifacts/
 *.npz
 *.npy
 

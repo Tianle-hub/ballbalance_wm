@@ -93,3 +93,65 @@ python scripts/plot_dataset.py data/ball_balance_dataset.npz --episode 0
 ```bash
 pytest
 ```
+
+## Milestone 2: RSSM World Model
+
+Before training, check that the environment and collected dataset are sane:
+
+```bash
+python scripts/check_milestone1.py --dataset data/ball_balance_v0.npz
+```
+
+Train a low-dimensional Gaussian RSSM:
+
+```bash
+python scripts/train_rssm.py \
+  --dataset data/ball_balance_v0.npz \
+  --run-dir runs/rssm_ball_v0 \
+  --seq-len 50 \
+  --batch-size 128 \
+  --epochs 100
+```
+
+Evaluate posterior reconstruction, one-step prior prediction, and open-loop rollout:
+
+```bash
+python scripts/eval_rssm_prediction.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --dataset data/ball_balance_v0.npz
+```
+
+Visualize true observations, posterior reconstruction, and prior open-loop rollout:
+
+```bash
+python scripts/visualize_rssm_rollout.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --dataset data/ball_balance_v0.npz
+```
+
+Play the decoded imagined future rollout on the board, similar to the environment render:
+
+```bash
+python scripts/visualize_rssm_rollout.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --dataset data/ball_balance_v0.npz \
+  --context-len 10 \
+  --horizon 100 \
+  --play
+```
+
+You can also save the same playback as a GIF:
+
+```bash
+python scripts/visualize_rssm_rollout.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --dataset data/ball_balance_v0.npz \
+  --save-gif runs/rssm_ball_v0/figures/imagined_rollout.gif
+```
+
+Prediction modes:
+
+- Posterior reconstruction uses the current observation `obs_t` to infer `z_t`, then decodes the latent state. It checks representation quality but can hide weak dynamics.
+- One-step prior prediction predicts `z_t` from the previous latent state and previous action, then compares against `obs_t`.
+- Multi-step open-loop prediction warms up the posterior for a context window, then rolls forward using only future actions and the RSSM prior.
+- Open-loop prediction is the important dynamics test because future observations are not provided to the model.
