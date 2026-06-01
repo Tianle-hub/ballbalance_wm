@@ -102,6 +102,13 @@ Before training, check that the environment and collected dataset are sane:
 python scripts/check_milestone1.py --dataset data/ball_balance_v0.npz
 ```
 
+First collect offline data by
+
+```bash
+python scripts/collect_dataset.py   --num-episodes 1000   --max-episode-steps 300   --mode mixed   --seed 0   --out data/ball_balance_v0.npz
+```
+
+
 Train a low-dimensional Gaussian RSSM:
 
 ```bash
@@ -148,6 +155,22 @@ python scripts/visualize_rssm_rollout.py \
   --dataset data/ball_balance_v0.npz \
   --save-gif runs/rssm_ball_v0/figures/imagined_rollout.gif
 ```
+
+Evaluate the trained model on fresh bounded random initial conditions rather than replaying an existing dataset episode:
+
+```bash
+python scripts/eval_rssm_random_ic_rollout.py \
+  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --num-episodes 128 \
+  --context-len 20 \
+  --horizon 100 \
+  --pos-bound 0.25 \
+  --vel-bound 0.20 \
+  --angle-bound 0.12 \
+  --action-mode mixed
+```
+
+This creates true environment rollouts from random bounded initial states `[x, y, vx, vy, theta_x, theta_y]`, then compares decoded RSSM prior imagination against the true future ball trajectory. It saves `random_ic_metrics.json`, error curves, and trajectory plots under the checkpoint run directory.
 
 Prediction modes:
 
