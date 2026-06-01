@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ball_rssm.envs import BallBalanceEnv
 from scripts.collect_dataset import collect_dataset
@@ -70,6 +75,54 @@ def test_zero_action_from_zero_state_stays_near_zero() -> None:
         env.close()
 
 
+def test_positive_theta_y_command_increases_x() -> None:
+    env = BallBalanceEnv()
+    try:
+        env.reset(seed=0)
+        env.state[:] = 0.0
+        action = np.array([0.0, 0.1], dtype=np.float32)
+
+        obs, _, terminated, truncated, info = env.step(action)
+        assert not terminated
+        assert not truncated
+        assert info["acceleration"][0] > 0.0
+        assert obs[2] > 0.0
+        assert obs[0] > 0.0
+
+        previous_x = obs[0]
+        for _ in range(10):
+            obs, _, terminated, truncated, _ = env.step(action)
+            assert not terminated
+            assert not truncated
+        assert obs[0] > previous_x
+    finally:
+        env.close()
+
+
+def test_positive_theta_x_command_decreases_y() -> None:
+    env = BallBalanceEnv()
+    try:
+        env.reset(seed=0)
+        env.state[:] = 0.0
+        action = np.array([0.1, 0.0], dtype=np.float32)
+
+        obs, _, terminated, truncated, info = env.step(action)
+        assert not terminated
+        assert not truncated
+        assert info["acceleration"][1] < 0.0
+        assert obs[3] < 0.0
+        assert obs[1] < 0.0
+
+        previous_y = obs[1]
+        for _ in range(10):
+            obs, _, terminated, truncated, _ = env.step(action)
+            assert not terminated
+            assert not truncated
+        assert obs[1] < previous_y
+    finally:
+        env.close()
+
+
 def test_large_initial_position_eventually_falls_or_truncates() -> None:
     env = BallBalanceEnv(config={"max_episode_steps": 200})
     try:
@@ -96,3 +149,9 @@ def test_dataset_collector_shapes() -> None:
     assert dataset["done"].shape == (3, 12, 1)
     assert dataset["obs"].dtype == np.float32
     assert dataset["action"].dtype == np.float32
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))
