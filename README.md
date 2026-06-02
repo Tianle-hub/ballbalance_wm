@@ -48,13 +48,26 @@ python scripts/run_pd_env.py --kp 0.8 --kd 0.25 --seed 0
 
 ## Collect Dataset
 
+V0 Version
+```bash
+python scripts/collect_dataset.py   
+--num-episodes 1000   --max-episode-steps 300   
+--mode mixed   --seed 0   --out data/ball_balance_v0.npz
+```
+
+V1 Version:
 ```bash
 python scripts/collect_dataset.py \
-  --num-episodes 100 \
+  --num-episodes 5000 \
   --max-episode-steps 300 \
-  --mode mixed \
+  --mode mpc_cover \
+  --pos-bound 0.25 \
+  --vel-bound 0.20 \
+  --angle-bound 0.12 \
+  --target-bound 0.15 \
+  --action-noise-std 0.04 \
   --seed 0 \
-  --out data/ball_balance_dataset.npz
+  --out data/ball_balance_mpc__v1.npz
 ```
 
 Policy modes:
@@ -101,13 +114,6 @@ Before training, check that the environment and collected dataset are sane:
 ```bash
 python scripts/check_milestone1.py --dataset data/ball_balance_v0.npz
 ```
-
-First collect offline data by
-
-```bash
-python scripts/collect_dataset.py   --num-episodes 1000   --max-episode-steps 300   --mode mixed   --seed 0   --out data/ball_balance_v0.npz
-```
-
 
 Train a low-dimensional Gaussian RSSM:
 
@@ -187,7 +193,7 @@ Center stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
   --num-episodes 5 \
   --max-steps 300 \
   --horizon 25
@@ -197,7 +203,7 @@ Fixed target stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_viapoint.py \
-  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
   --target-x 0.15 \
   --target-y -0.10
 ```
@@ -206,7 +212,7 @@ Evaluate many random initial conditions:
 
 ```bash
 python scripts/eval_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
   --mode center \
   --num-episodes 50
 ```
@@ -215,15 +221,15 @@ Compare PD against RSSM MPC:
 
 ```bash
 python scripts/compare_pd_vs_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt
+  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt
 ```
 
 Visualize a closed-loop MPC rollout:
 
 ```bash
 python scripts/visualize_mpc_rollout.py \
-  --checkpoint runs/rssm_ball_v0/checkpoints/best.pt \
-  --out-dir runs/rssm_ball_v0/mpc_visualization
+  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
+  --out-dir runs/rssm_ball_v1/mpc_visualization
 ```
 
 MPC loop:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 from ball_rssm.data.sequence_dataset import SequenceDataset
+from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
+from scripts.collect_dataset import InitialStateBounds, collect_dataset, save_dataset
 
 
 def test_sequence_dataset_window_shapes(tmp_path) -> None:
@@ -22,3 +25,45 @@ def test_sequence_dataset_window_shapes(tmp_path) -> None:
     assert sample["done"].shape == (5, 1)
     assert sample["obs"].dtype.is_floating_point
     assert sample["action"].dtype.is_floating_point
+
+
+def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
+    collected = collect_dataset(
+        num_episodes=6,
+        max_episode_steps=20,
+        seed=3,
+        mode="mpc_cover",
+        initial_bounds=InitialStateBounds(pos=0.25, vel=0.20, angle=0.12),
+        target_bound=0.15,
+        action_noise_std=0.04,
+    )
+    path = tmp_path / "mpc_cover.npz"
+    save_dataset(collected, path, mode="mpc_cover")
+
+    dataset = SequenceDataset(path, seq_len=10, split="all")
+    assert len(dataset) > 0
+
+    train_obs, train_action = dataset.selected_obs_actions()
+    normalizer = Normalizer.from_arrays(train_obs, train_action)
+    batch = {
+        key: torch.stack([dataset[i][key] for i in range(3)])
+        for key in ("obs", "action", "reward", "done")
+    }
+    obs = normalizer.normalize_obs(batch["obs"])
+    action = normalizer.normalize_action(batch["action"])
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=32,
+            stoch_dim=8,
+            embed_dim=16,
+            hidden_dim=32,
+        )
+    )
+    loss, metrics = model.loss(obs, action, batch["reward"], batch["done"])
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["recon_loss"])
+    assert torch.isfinite(metrics["kl_loss"])
+    loss.backward()

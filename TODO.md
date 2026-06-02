@@ -27,3 +27,12 @@ theta_x/y  in [-0.12, 0.12]
 ```
 
 If evaluation uses the wider distribution, rollout error may reflect out-of-distribution generalization rather than only model quality.
+
+
+## CEM
+Gradient-based planning:
+    initialize action sequence
+    rollout RSSM
+    compute cost
+    backprop cost to action sequence
+    update action sequence by Adam
