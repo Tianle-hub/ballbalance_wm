@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from ball_rssm.data.sequence_dataset import SequenceDataset
+from ball_rssm.buffer import Buffer
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
 from scripts.collect_dataset import InitialStateBounds, collect_dataset, save_dataset
 
@@ -25,6 +26,22 @@ def test_sequence_dataset_window_shapes(tmp_path) -> None:
     assert sample["done"].shape == (5, 1)
     assert sample["obs"].dtype.is_floating_point
     assert sample["action"].dtype.is_floating_point
+
+
+def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
+    path = tmp_path / "buffer_dataset.npz"
+    buffer = Buffer.collect_data(num_episodes=3, max_episode_steps=12, seed=5, mode="mixed")
+    buffer.save(path, mode="mixed")
+
+    loaded = Buffer.load(path)
+    dataset = loaded.sequence_dataset(seq_len=6, split="all")
+    sample = dataset[0]
+
+    assert loaded.obs_buffer.shape == (3, 13, 6)
+    assert loaded.action_buffer.shape == (3, 12, 2)
+    assert loaded.reward_buffer.shape == (3, 12, 1)
+    assert sample["obs"].shape == (7, 6)
+    assert sample["action"].shape == (6, 2)
 
 
 def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:

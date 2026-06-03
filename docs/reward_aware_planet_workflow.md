@@ -10,7 +10,7 @@ latent state -> reward model
 
 The reward model follows the same idea as PlaNet/Dreamer-style RSSMs: concatenate deterministic state `h`
 and stochastic state `z`, then predict scalar reward with an MLP. The implementation stays in the repo's
-low-dimensional style rather than adding a buffer/agent framework.
+low-dimensional style while using `Buffer` as the data collection, NPZ I/O, and training dataset entry point.
 
 ## 1. Collect Data
 
@@ -84,9 +84,9 @@ python scripts/eval_rssm_prediction.py \
 This writes:
 
 ```text
-runs/rssm_ball_v2_long/eval_metrics.json
-runs/rssm_ball_v2_long/open_loop_mse_curve.png
-runs/rssm_ball_v2_long/open_loop_reward_mse_curve.png
+runs/rssm_ball_v2_long_wiz_reward_model/eval_metrics.json
+runs/rssm_ball_v2_long_wiz_reward_model/open_loop_mse_curve.png
+runs/rssm_ball_v2_long_wiz_reward_model/open_loop_reward_mse_curve.png
 ```
 
 ## 4. Plan With MPC

@@ -22,7 +22,7 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
 
     def __init__(
         self,
-        path: str | Path,
+        source: str | Path | Any,
         seq_len: int,
         split: str = "train",
         val_fraction: float = 0.1,
@@ -34,8 +34,8 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
         if split not in {"train", "val", "all"}:
             raise ValueError("split must be one of: train, val, all")
 
-        arrays = load_npz_arrays(path)
-        self.path = Path(path)
+        arrays = load_sequence_arrays(source)
+        self.source = source
         self.seq_len = seq_len
         self.obs = arrays["obs"]
         self.action = arrays["action"]
@@ -97,8 +97,22 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
         return self.obs[self.episode_indices], self.action[self.episode_indices], reward
 
 
+def load_sequence_arrays(source: str | Path | Any) -> dict[str, np.ndarray]:
+    if isinstance(source, (str, Path)):
+        return load_npz_arrays(source)
+    if isinstance(source, dict):
+        return normalize_sequence_arrays(source)
+    if hasattr(source, "to_dataset"):
+        return normalize_sequence_arrays(source.to_dataset())
+    raise TypeError("source must be an NPZ path, a dataset dict, or a Buffer-like object")
+
+
 def load_npz_arrays(path: str | Path) -> dict[str, np.ndarray]:
-    loaded = np.load(path)
+    with np.load(path) as loaded:
+        return normalize_sequence_arrays(loaded)
+
+
+def normalize_sequence_arrays(loaded: Any) -> dict[str, np.ndarray]:
     arrays: dict[str, np.ndarray] = {
         "obs": loaded["obs"].astype(np.float32),
         "action": loaded["action"].astype(np.float32),
