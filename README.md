@@ -55,7 +55,7 @@ python scripts/collect_dataset.py
 --mode mixed   --seed 0   --out data/ball_balance_v0.npz
 ```
 
-V1 Version:
+!!!V1 Version: this works well
 ```bash
 python scripts/collect_dataset.py \
   --num-episodes 5000 \
@@ -67,7 +67,7 @@ python scripts/collect_dataset.py \
   --target-bound 0.15 \
   --action-noise-std 0.04 \
   --seed 0 \
-  --out data/ball_balance_mpc__v1.npz
+  --out data/ball_balance_mpc_v1.npz
 ```
 
 Policy modes:
@@ -124,6 +124,11 @@ python scripts/train_rssm.py \
   --seq-len 50 \
   --batch-size 128 \
   --epochs 100
+```
+
+!!! Following parameters work well for mpc control
+```bash
+python scripts/train_rssm.py   --dataset data/ball_balance_mpc_v1.npz   --run-dir runs/rssm_ball_v2_long   --seq-len 200   --batch-size 256   --epochs 100
 ```
 
 Evaluate posterior reconstruction, one-step prior prediction, and open-loop rollout:
@@ -231,6 +236,26 @@ python scripts/visualize_mpc_rollout.py \
   --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
   --out-dir runs/rssm_ball_v1/mpc_visualization
 ```
+
+Run an online closed-loop visualizer with the gym ball window, sliding-window control input plot,
+sliding-window state plot, automatic episode switching, random initial states, and final success rate:
+
+```bash
+python scripts/online_mpc_visualizer.py \
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --task viapoint \
+  --num-episodes 5 \
+  --max-steps 150 \
+  --pos-bound 0.25 \
+  --vel-bound 0.10 \
+  --angle-bound 0.05 \
+  --target-bound 0.18
+```
+
+Use `--task center` for center stabilization, `--task viapoint` for a random target per episode,
+or `--task random` to randomly mix center and via-point episodes. Per-axis initial condition
+bounds are also available through `--x-bound`, `--y-bound`, `--vx-bound`, `--vy-bound`,
+`--theta-x-bound`, and `--theta-y-bound`.
 
 MPC loop:
 
