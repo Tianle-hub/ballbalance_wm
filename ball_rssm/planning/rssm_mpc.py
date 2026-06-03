@@ -13,10 +13,17 @@ from gymnasium import spaces
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.models.rssm import RSSMState, repeat_state
 from ball_rssm.planning.cem import CEMPlanner
-from ball_rssm.planning.costs import CostWeights, center_stabilization_cost, point_stabilization_cost, timed_viapoint_cost
+from ball_rssm.planning.costs import (
+    CostWeights,
+    center_stabilization_cost,
+    learned_reward_cost,
+    point_stabilization_cost,
+    timed_viapoint_cost,
+)
 from ball_rssm.utils.checkpoint import load_checkpoint
 
 CostMode = Literal["center", "point", "timed_viapoint"]
+PlanningObjective = Literal["state_cost", "reward", "hybrid"]
 
 
 @dataclass
@@ -24,6 +31,7 @@ class MPCDiagnostics:
     best_cost: float
     best_action_sequence: np.ndarray
     predicted_obs: np.ndarray
+    predicted_reward: np.ndarray
     cem: dict[str, object]
 
 
@@ -38,6 +46,7 @@ class RSSMMPCController:
         num_iterations: int = 4,
         device: torch.device | str = "cpu",
         cost_mode: CostMode = "center",
+        planning_objective: PlanningObjective = "state_cost",
         target_xy: tuple[float, float] | None = None,
         via_step: int | None = None,
         stochastic: bool = False,
@@ -57,6 +66,7 @@ class RSSMMPCController:
         self.action_dim = int(np.prod(action_space.shape))
         self.horizon = horizon
         self.cost_mode = cost_mode
+        self.planning_objective = planning_objective
         self.target_xy = target_xy
         self.via_step = via_step if via_step is not None else max(0, horizon - 1)
         self.stochastic = stochastic
@@ -98,14 +108,16 @@ class RSSMMPCController:
         assert self.state is not None
 
         def cost_fn(candidate_actions_real: torch.Tensor) -> torch.Tensor:
-            pred_obs = self._predict_obs_for_candidates(candidate_actions_real)
-            return self._cost(pred_obs, candidate_actions_real)
+            pred_obs, pred_reward = self._predict_for_candidates(candidate_actions_real)
+            return self._cost(pred_obs, pred_reward, candidate_actions_real)
 
         result = self.planner.plan(cost_fn)
         best_sequence = result.best_action_sequence.detach()
         best_action = best_sequence[0].detach().cpu().numpy().astype(np.float32)
         best_action = np.clip(best_action, self.action_space.low, self.action_space.high).astype(np.float32)
-        pred_obs = self._predict_obs_for_candidates(best_sequence.unsqueeze(0))[0].detach().cpu().numpy()
+        pred_obs_t, pred_reward_t = self._predict_for_candidates(best_sequence.unsqueeze(0))
+        pred_obs = pred_obs_t[0].detach().cpu().numpy()
+        pred_reward = pred_reward_t[0].detach().cpu().numpy()
 
         self.planner.shift_mean(best_sequence)
         self.prev_action = best_action.reshape(self.action_dim)
@@ -114,6 +126,7 @@ class RSSMMPCController:
             best_cost=float(result.best_cost.detach().cpu()),
             best_action_sequence=best_sequence.detach().cpu().numpy(),
             predicted_obs=pred_obs,
+            predicted_reward=pred_reward,
             cem=result.diagnostics,
         )
         return best_action.reshape(self.action_space.shape)
@@ -128,6 +141,10 @@ class RSSMMPCController:
             return self.model.posterior_update(self.state, action_norm, obs_norm)
 
     def _predict_obs_for_candidates(self, candidate_actions_real: torch.Tensor) -> torch.Tensor:
+        pred_obs, _ = self._predict_for_candidates(candidate_actions_real)
+        return pred_obs
+
+    def _predict_for_candidates(self, candidate_actions_real: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         assert self.state is not None
         num_candidates = candidate_actions_real.shape[0]
         action_norm = self.normalizer.normalize_action(candidate_actions_real)
@@ -137,20 +154,31 @@ class RSSMMPCController:
             prior = imagined["prior"]
             assert isinstance(prior, dict)
             obs_norm_pred = self.model.decode_state_sequence(prior)
-            return self.normalizer.denormalize_obs(obs_norm_pred)
+            reward_norm_pred = self.model.predict_reward_sequence(prior)
+            return self.normalizer.denormalize_obs(obs_norm_pred), self.normalizer.denormalize_reward(reward_norm_pred)
 
-    def _cost(self, pred_obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def _cost(self, pred_obs: torch.Tensor, pred_reward: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        if self.planning_objective == "reward":
+            return learned_reward_cost(pred_reward, pred_obs, actions, self.weights)
+
         if self.cost_mode == "center":
-            return center_stabilization_cost(pred_obs, actions, self.weights)
-        if self.cost_mode == "point":
+            state_cost = center_stabilization_cost(pred_obs, actions, self.weights)
+        elif self.cost_mode == "point":
             if self.target_xy is None:
                 raise ValueError("target_xy is required for point cost")
-            return point_stabilization_cost(pred_obs, actions, self.target_xy, self.weights)
-        if self.cost_mode == "timed_viapoint":
+            state_cost = point_stabilization_cost(pred_obs, actions, self.target_xy, self.weights)
+        elif self.cost_mode == "timed_viapoint":
             if self.target_xy is None:
                 raise ValueError("target_xy is required for timed_viapoint cost")
-            return timed_viapoint_cost(pred_obs, actions, self.target_xy, self.via_step, self.weights)
-        raise ValueError(f"Unsupported cost_mode={self.cost_mode!r}")
+            state_cost = timed_viapoint_cost(pred_obs, actions, self.target_xy, self.via_step, self.weights)
+        else:
+            raise ValueError(f"Unsupported cost_mode={self.cost_mode!r}")
+
+        if self.planning_objective == "state_cost":
+            return state_cost
+        if self.planning_objective == "hybrid":
+            return state_cost + learned_reward_cost(pred_reward, pred_obs, actions, self.weights)
+        raise ValueError(f"Unsupported planning_objective={self.planning_objective!r}")
 
     def diagnostics_dict(self) -> dict[str, Any]:
         if self.last_diagnostics is None:
@@ -159,5 +187,6 @@ class RSSMMPCController:
             "best_cost": self.last_diagnostics.best_cost,
             "best_action_sequence": self.last_diagnostics.best_action_sequence,
             "predicted_obs": self.last_diagnostics.predicted_obs,
+            "predicted_reward": self.last_diagnostics.predicted_reward,
             "cem": self.last_diagnostics.cem,
         }

@@ -16,6 +16,7 @@ from ball_rssm.models.rssm import RSSM, RSSMState
 class WorldModelConfig:
     obs_dim: int = 6
     action_dim: int = 2
+    reward_dim: int = 1
     deter_dim: int = 128
     stoch_dim: int = 16
     embed_dim: int = 64
@@ -23,6 +24,7 @@ class WorldModelConfig:
     min_std: float = 1e-4
     beta_kl: float = 1.0
     free_nats: float = 1.0
+    reward_loss_weight: float = 1.0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -41,7 +43,9 @@ class WorldModel(nn.Module):
             hidden_dim=config.hidden_dim,
             min_std=config.min_std,
         )
-        self.decoder = build_mlp(config.deter_dim + config.stoch_dim, config.hidden_dim, config.obs_dim)
+        feature_dim = config.deter_dim + config.stoch_dim
+        self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
+        self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
 
     def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
         batch_size, obs_steps, obs_dim = obs_seq.shape
@@ -55,10 +59,14 @@ class WorldModel(nn.Module):
 
         recon = self.decode_features(posterior["h"], posterior["z"])
         prior_recon = self.decode_features(prior["h"], prior["z"])
+        reward_pred = self.predict_reward_from_features(posterior["h"], posterior["z"])
+        prior_reward_pred = self.predict_reward_from_features(prior["h"], prior["z"])
         return {
             **rssm_out,
             "recon": recon,
             "prior_recon": prior_recon,
+            "reward_pred": reward_pred,
+            "prior_reward_pred": prior_reward_pred,
         }
 
     def loss(
@@ -68,26 +76,34 @@ class WorldModel(nn.Module):
         reward_seq: torch.Tensor | None = None,
         done_seq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        del reward_seq, done_seq
+        del done_seq
         out = self.forward(obs_seq, action_seq)
         recon = out["recon"]
+        reward_pred = out["reward_pred"]
         posterior = out["posterior"]
         prior = out["prior"]
         assert isinstance(recon, torch.Tensor)
+        assert isinstance(reward_pred, torch.Tensor)
         assert isinstance(posterior, dict)
         assert isinstance(prior, dict)
 
         recon_loss = torch.mean((recon[:, 1:] - obs_seq[:, 1:]) ** 2)
+        reward_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
+        if reward_seq is not None:
+            if reward_seq.shape[:2] != action_seq.shape[:2]:
+                raise ValueError("reward_seq must have shape [batch, action_steps, reward_dim]")
+            reward_loss = torch.mean((reward_pred[:, 1:] - reward_seq) ** 2)
         posterior_dist = independent_normal(posterior["mean"], posterior["std"])
         prior_dist = independent_normal(prior["mean"], prior["std"])
         kl = kl_divergence(posterior_dist, prior_dist)
         raw_kl = kl[:, 1:].mean()
         kl_loss = torch.clamp(kl[:, 1:], min=self.config.free_nats).mean()
-        total_loss = recon_loss + self.config.beta_kl * kl_loss
+        total_loss = recon_loss + self.config.beta_kl * kl_loss + self.config.reward_loss_weight * reward_loss
 
         metrics = {
             "total_loss": total_loss.detach(),
             "recon_loss": recon_loss.detach(),
+            "reward_loss": reward_loss.detach(),
             "kl_loss": kl_loss.detach(),
             "raw_kl": raw_kl.detach(),
             "posterior_std_mean": posterior["std"].detach().mean(),
@@ -126,6 +142,30 @@ class WorldModel(nn.Module):
         assert isinstance(prior, dict)
         return self.decode_features(prior["h"], prior["z"])
 
+    def open_loop_predict_rewards(
+        self,
+        obs_seq: torch.Tensor,
+        action_seq: torch.Tensor,
+        context_len: int,
+        horizon: int,
+    ) -> torch.Tensor:
+        if context_len < 0:
+            raise ValueError("context_len must be non-negative")
+        horizon = min(horizon, action_seq.shape[1] - context_len)
+        if horizon <= 0:
+            raise ValueError("No future actions available for open-loop prediction")
+
+        context_obs = obs_seq[:, : context_len + 1]
+        context_action = action_seq[:, :context_len]
+        context_out = self.forward(context_obs, context_action)
+        start_state = context_out["last_state"]
+        assert isinstance(start_state, RSSMState)
+        future_actions = action_seq[:, context_len : context_len + horizon]
+        imagined = self.rssm.imagine(start_state, future_actions)
+        prior = imagined["prior"]
+        assert isinstance(prior, dict)
+        return self.predict_reward_from_features(prior["h"], prior["z"])
+
     def encode_obs(self, obs_norm: torch.Tensor) -> torch.Tensor:
         return self.encoder(obs_norm)
 
@@ -153,11 +193,20 @@ class WorldModel(nn.Module):
     def decode_state_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
         return self.decode_features(states["h"], states["z"])
 
+    def predict_reward_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self.predict_reward_from_features(states["h"], states["z"])
+
     def decode_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
         decoded = self.decoder(flat)
         return decoded.reshape(*feature.shape[:-1], -1)
+
+    def predict_reward_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        feature = torch.cat([h, z], dim=-1)
+        flat = feature.reshape(-1, feature.shape[-1])
+        reward = self.reward_model(flat)
+        return reward.reshape(*feature.shape[:-1], -1)
 
 
 def independent_normal(mean: torch.Tensor, std: torch.Tensor) -> Independent:

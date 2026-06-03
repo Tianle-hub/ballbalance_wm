@@ -43,14 +43,15 @@ def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
     dataset = SequenceDataset(path, seq_len=10, split="all")
     assert len(dataset) > 0
 
-    train_obs, train_action = dataset.selected_obs_actions()
-    normalizer = Normalizer.from_arrays(train_obs, train_action)
+    train_obs, train_action, train_reward = dataset.selected_arrays()
+    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
     batch = {
         key: torch.stack([dataset[i][key] for i in range(3)])
         for key in ("obs", "action", "reward", "done")
     }
     obs = normalizer.normalize_obs(batch["obs"])
     action = normalizer.normalize_action(batch["action"])
+    reward = normalizer.normalize_reward(batch["reward"])
 
     model = WorldModel(
         WorldModelConfig(
@@ -62,8 +63,9 @@ def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
             hidden_dim=32,
         )
     )
-    loss, metrics = model.loss(obs, action, batch["reward"], batch["done"])
+    loss, metrics = model.loss(obs, action, reward, batch["done"])
     assert torch.isfinite(loss)
     assert torch.isfinite(metrics["recon_loss"])
+    assert torch.isfinite(metrics["reward_loss"])
     assert torch.isfinite(metrics["kl_loss"])
     loss.backward()

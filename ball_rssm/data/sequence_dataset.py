@@ -90,6 +90,12 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
 
         return self.obs[self.episode_indices], self.action[self.episode_indices]
 
+    def selected_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Return selected observation, action, and reward arrays for normalization."""
+
+        reward = None if self.reward is None else self.reward[self.episode_indices]
+        return self.obs[self.episode_indices], self.action[self.episode_indices], reward
+
 
 def load_npz_arrays(path: str | Path) -> dict[str, np.ndarray]:
     loaded = np.load(path)

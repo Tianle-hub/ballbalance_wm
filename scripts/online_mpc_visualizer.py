@@ -195,6 +195,7 @@ def run_online_episode(
     rewards: list[float] = []
     costs: list[float] = []
     predicted_obs: list[np.ndarray] = []
+    predicted_reward: list[np.ndarray] = []
     computation_times: list[float] = []
     terminated = False
     truncated = False
@@ -214,6 +215,8 @@ def run_online_episode(
             costs.append(best_cost)
         if "predicted_obs" in diagnostics:
             predicted_obs.append(np.asarray(diagnostics["predicted_obs"], dtype=np.float32))
+        if "predicted_reward" in diagnostics:
+            predicted_reward.append(np.asarray(diagnostics["predicted_reward"], dtype=np.float32))
 
         obs, reward, terminated, truncated, _ = env.step(action)
         observations.append(obs.copy())
@@ -229,6 +232,9 @@ def run_online_episode(
     action_arr = np.asarray(actions, dtype=np.float32)
     reward_arr = np.asarray(rewards, dtype=np.float32)
     pred_arr = np.asarray(predicted_obs, dtype=np.float32) if predicted_obs else np.zeros((0, controller.horizon, 6), dtype=np.float32)
+    pred_reward_arr = (
+        np.asarray(predicted_reward, dtype=np.float32) if predicted_reward else np.zeros((0, controller.horizon, 1), dtype=np.float32)
+    )
     distance = np.linalg.norm(obs_arr[:, :2] - np.asarray(target_xy, dtype=np.float32), axis=-1)
 
     return {
@@ -237,6 +243,7 @@ def run_online_episode(
         "reward": reward_arr,
         "cost": np.asarray(costs, dtype=np.float32),
         "predicted_obs": pred_arr,
+        "predicted_reward": pred_reward_arr,
         "distance": distance.astype(np.float32),
         "computation_time": np.asarray(computation_times, dtype=np.float32),
         "terminated": bool(terminated),
@@ -262,6 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-candidates", type=int, default=1024)
     parser.add_argument("--num-elites", type=int, default=100)
     parser.add_argument("--num-iterations", type=int, default=4)
+    parser.add_argument("--planning-objective", choices=["state_cost", "reward", "hybrid"], default="state_cost")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -325,6 +333,7 @@ def main() -> None:
             num_iterations=args.num_iterations,
             device=args.device,
             cost_mode="center",
+            planning_objective=args.planning_objective,
             seed=args.seed,
         )
 

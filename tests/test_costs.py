@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from ball_rssm.planning.costs import center_stabilization_cost, point_stabilization_cost, timed_viapoint_cost
+from ball_rssm.planning.costs import center_stabilization_cost, learned_reward_cost, point_stabilization_cost, timed_viapoint_cost
 
 
 def test_center_cost_shape_and_position_ordering() -> None:
@@ -39,4 +39,17 @@ def test_timed_viapoint_cost_lower_at_via_step() -> None:
     pred_obs[0, 3, :2] = torch.tensor(target)
     pred_obs[1, 3, :2] = torch.tensor([-0.15, -0.1])
     cost = timed_viapoint_cost(pred_obs, actions, target_xy=target, via_step=3)
+    assert cost[0] < cost[1]
+
+
+def test_learned_reward_cost_prefers_higher_reward() -> None:
+    actions = torch.zeros(2, 4, 2)
+    pred_obs = torch.zeros(2, 4, 6)
+    pred_reward = torch.zeros(2, 4, 1)
+    pred_reward[0, :, 0] = 1.0
+    pred_reward[1, :, 0] = -1.0
+
+    cost = learned_reward_cost(pred_reward, pred_obs, actions)
+
+    assert cost.shape == (2,)
     assert cost[0] < cost[1]

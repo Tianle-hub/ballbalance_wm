@@ -107,7 +107,12 @@ python scripts/plot_dataset.py data/ball_balance_dataset.npz --episode 0
 pytest
 ```
 
-## Milestone 2: RSSM World Model
+## Reward-Aware PlaNet Workflow
+
+This branch trains an RSSM world model with both an observation decoder and a reward model.
+See [docs/reward_aware_planet_workflow.md](docs/reward_aware_planet_workflow.md) for the full workflow.
+
+## Milestone 2: RSSM + Reward World Model
 
 Before training, check that the environment and collected dataset are sane:
 
@@ -115,7 +120,7 @@ Before training, check that the environment and collected dataset are sane:
 python scripts/check_milestone1.py --dataset data/ball_balance_v0.npz
 ```
 
-Train a low-dimensional Gaussian RSSM:
+Train a low-dimensional Gaussian RSSM with a reward head:
 
 ```bash
 python scripts/train_rssm.py \
@@ -123,12 +128,19 @@ python scripts/train_rssm.py \
   --run-dir runs/rssm_ball_v0 \
   --seq-len 50 \
   --batch-size 128 \
-  --epochs 100
+  --epochs 100 \
+  --reward-loss-weight 1.0
 ```
 
 !!! Following parameters work well for mpc control
 ```bash
-python scripts/train_rssm.py   --dataset data/ball_balance_mpc_v1.npz   --run-dir runs/rssm_ball_v2_long   --seq-len 200   --batch-size 256   --epochs 100
+python scripts/train_rssm.py \
+  --dataset data/ball_balance_mpc_v1.npz \
+  --run-dir runs/rssm_ball_v2_long \
+  --seq-len 200 \
+  --batch-size 256 \
+  --epochs 100 \
+  --reward-loss-weight 1.0
 ```
 
 Evaluate posterior reconstruction, one-step prior prediction, and open-loop rollout:
@@ -190,51 +202,68 @@ Prediction modes:
 - Multi-step open-loop prediction warms up the posterior for a context window, then rolls forward using only future actions and the RSSM prior.
 - Open-loop prediction is the important dynamics test because future observations are not provided to the model.
 
-## Milestone 3: RSSM + CEM/MPC
+## Milestone 3: Reward-Aware RSSM + CEM/MPC
 
 Train an RSSM checkpoint first. MPC does not retrain the model; it only uses the frozen checkpoint for planning.
+The default objective is `state_cost`, which uses hand-written costs over decoded observations.
+For center stabilization, `--planning-objective reward` can instead maximize the learned environment reward.
+For via-point tasks, keep `state_cost` unless you explicitly want the learned center reward to bias the plan.
 
 Center stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
   --num-episodes 5 \
   --max-steps 300 \
-  --horizon 25
+  --horizon 25 \
+  --planning-objective state_cost
 ```
 
 Fixed target stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_viapoint.py \
-  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
   --target-x 0.15 \
-  --target-y -0.10
+  --target-y -0.10 \
+  --planning-objective state_cost
+```
+
+Center stabilization with learned reward planning:
+
+```bash
+python scripts/run_rssm_mpc_center.py \
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --num-episodes 5 \
+  --max-steps 300 \
+  --horizon 25 \
+  --planning-objective reward
 ```
 
 Evaluate many random initial conditions:
 
 ```bash
 python scripts/eval_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
   --mode center \
-  --num-episodes 50
+  --num-episodes 50 \
+  --planning-objective state_cost
 ```
 
 Compare PD against RSSM MPC:
 
 ```bash
 python scripts/compare_pd_vs_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt
 ```
 
 Visualize a closed-loop MPC rollout:
 
 ```bash
 python scripts/visualize_mpc_rollout.py \
-  --checkpoint runs/rssm_ball_v1/checkpoints/best.pt \
-  --out-dir runs/rssm_ball_v1/mpc_visualization
+  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --out-dir runs/rssm_ball_v2_long/mpc_visualization
 ```
 
 Run an online closed-loop visualizer with the gym ball window, sliding-window control input plot,
@@ -249,7 +278,8 @@ python scripts/online_mpc_visualizer.py \
   --pos-bound 0.25 \
   --vel-bound 0.10 \
   --angle-bound 0.05 \
-  --target-bound 0.18
+  --target-bound 0.18 \
+  --planning-objective state_cost
 ```
 
 Use `--task center` for center stabilization, `--task viapoint` for a random target per episode,
@@ -262,7 +292,8 @@ MPC loop:
 ```text
 real obs_t -> posterior update -> CEM samples future actions
 -> RSSM prior rollout -> decode predicted observations
--> cost on denormalized predictions -> execute first action only
+-> predict rewards from imagined latent states
+-> objective on denormalized predictions/rewards -> execute first action only
 -> replan at next real step
 ```
 
@@ -274,3 +305,4 @@ Important details:
 - Future rollout during planning uses RSSM prior imagination only.
 - Candidate actions are normalized before entering RSSM.
 - Predicted observations are denormalized before computing costs.
+- Predicted rewards are denormalized before learned-reward planning.

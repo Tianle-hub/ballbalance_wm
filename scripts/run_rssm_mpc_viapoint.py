@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--num-candidates", type=int, default=1024)
     parser.add_argument("--num-elites", type=int, default=100)
     parser.add_argument("--num-iterations", type=int, default=4)
+    parser.add_argument("--planning-objective", choices=["state_cost", "reward", "hybrid"], default="state_cost")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -58,6 +59,7 @@ def main() -> None:
             num_iterations=args.num_iterations,
             device=args.device,
             cost_mode="point",
+            planning_objective=args.planning_objective,
             target_xy=target,
             seed=args.seed,
         )

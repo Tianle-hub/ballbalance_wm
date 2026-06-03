@@ -19,6 +19,7 @@ class CostWeights:
     board_size: float = 1.0
     w_via: float = 100.0
     w_running: float = 2.0
+    w_reward: float = 1.0
 
 
 def center_stabilization_cost(
@@ -85,6 +86,21 @@ def target_trajectory_cost(
     cost = cost + _smoothness_cost(actions, weights)
     cost = cost + _boundary_cost(pred_obs, weights)
     return cost.sum(dim=-1)
+
+
+def learned_reward_cost(
+    pred_reward: torch.Tensor,
+    pred_obs: torch.Tensor,
+    actions: torch.Tensor,
+    weights: CostWeights | None = None,
+) -> torch.Tensor:
+    """Convert predicted environment reward into a minimization objective."""
+
+    weights = weights or CostWeights()
+    reward_return = pred_reward.squeeze(-1).sum(dim=-1)
+    smoothness = _smoothness_cost(actions, weights).sum(dim=-1)
+    boundary = _boundary_cost(pred_obs, weights).sum(dim=-1)
+    return -weights.w_reward * reward_return + smoothness + boundary
 
 
 def _target_tensor(target_xy: torch.Tensor | tuple[float, float] | None, pred_obs: torch.Tensor) -> torch.Tensor:
