@@ -62,6 +62,10 @@ Useful knobs:
 
 ```bash
 --reward-loss-weight 1.0
+--reward-prediction-mode raw        # raw | clip | split_fall
+--reward-clip-min -5.0              # normalized reward target floor for clip/split_fall
+--fall-loss-weight 1.0              # weight for fall-terminal reward/classification terms
+--fall-prediction-loss-weight 1.0   # split_fall only
 --beta-kl 1.0
 --free-nats 1.0
 ```
@@ -73,6 +77,12 @@ total_loss = observation_reconstruction_mse
            + beta_kl * free_nats_clamped_kl
            + reward_loss_weight * reward_prediction_mse
 ```
+
+The reward loss uses `done` to mask out post-done padding transitions. TensorBoard also logs
+`reward_loss_nonterminal`, `reward_loss_fall_terminal`, and `reward_loss_post_done_padding` so fall
+penalties and artificial padding are visible separately. See
+[reward_model_training_issue_0604.md](reward_model_training_issue_0604.md) for the June 4 diagnosis and
+the recommended `raw`, `clip`, and `split_fall` training recipes.
 
 The checkpoint contains one model state dict with encoder, RSSM dynamics, observation decoder, and reward
 model weights.

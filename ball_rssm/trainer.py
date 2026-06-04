@@ -101,7 +101,7 @@ class Trainer:
             reward = self.normalizer.normalize_reward(batch["reward"]) if "reward" in batch else None
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
-            loss, metrics = self.model.loss(obs, action, reward, batch.get("done"))
+            loss, metrics = self.model.loss(obs, action, reward, batch.get("done"), batch.get("terminated"))
             grad_norm = torch.tensor(0.0, device=self.device)
             if optimizer is not None:
                 loss.backward()

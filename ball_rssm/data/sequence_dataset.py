@@ -41,8 +41,10 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
         self.action = arrays["action"]
         self.reward = arrays.get("reward")
         self.done = arrays.get("done")
+        self.terminated = arrays.get("terminated")
+        self.truncated = arrays.get("truncated")
 
-        validate_sequence_arrays(self.obs, self.action, self.reward, self.done)
+        validate_sequence_arrays(self.obs, self.action, self.reward, self.done, self.terminated, self.truncated)
         num_episodes, obs_steps, _ = self.obs.shape
         action_steps = self.action.shape[1]
         if obs_steps != action_steps + 1:
@@ -83,6 +85,10 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
             sample["reward"] = torch.as_tensor(self.reward[episode, start:end], dtype=torch.float32)
         if self.done is not None:
             sample["done"] = torch.as_tensor(self.done[episode, start:end], dtype=torch.float32)
+        if self.terminated is not None:
+            sample["terminated"] = torch.as_tensor(self.terminated[episode, start:end], dtype=torch.float32)
+        if self.truncated is not None:
+            sample["truncated"] = torch.as_tensor(self.truncated[episode, start:end], dtype=torch.float32)
         return sample
 
     def selected_obs_actions(self) -> tuple[np.ndarray, np.ndarray]:
@@ -117,7 +123,7 @@ def normalize_sequence_arrays(loaded: Any) -> dict[str, np.ndarray]:
         "obs": loaded["obs"].astype(np.float32),
         "action": loaded["action"].astype(np.float32),
     }
-    for key in ("reward", "done"):
+    for key in ("reward", "done", "terminated", "truncated"):
         if key in loaded:
             arrays[key] = loaded[key].astype(np.float32)
     return arrays
@@ -128,6 +134,8 @@ def validate_sequence_arrays(
     action: np.ndarray,
     reward: np.ndarray | None = None,
     done: np.ndarray | None = None,
+    terminated: np.ndarray | None = None,
+    truncated: np.ndarray | None = None,
 ) -> None:
     if obs.ndim != 3:
         raise ValueError("obs must have shape [N, T + 1, obs_dim]")
@@ -141,7 +149,19 @@ def validate_sequence_arrays(
         raise ValueError("reward must share [N, T] with action")
     if done is not None and done.shape[:2] != action.shape[:2]:
         raise ValueError("done must share [N, T] with action")
-    for name, arr in {"obs": obs, "action": action, "reward": reward, "done": done}.items():
+    if terminated is not None and terminated.shape[:2] != action.shape[:2]:
+        raise ValueError("terminated must share [N, T] with action")
+    if truncated is not None and truncated.shape[:2] != action.shape[:2]:
+        raise ValueError("truncated must share [N, T] with action")
+    arrays = {
+        "obs": obs,
+        "action": action,
+        "reward": reward,
+        "done": done,
+        "terminated": terminated,
+        "truncated": truncated,
+    }
+    for name, arr in arrays.items():
         if arr is not None and not np.isfinite(arr).all():
             raise ValueError(f"{name} contains NaN or Inf")
 

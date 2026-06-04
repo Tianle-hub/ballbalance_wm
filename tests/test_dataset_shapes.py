@@ -14,8 +14,10 @@ def test_sequence_dataset_window_shapes(tmp_path) -> None:
     action = np.random.randn(4, 10, 2).astype(np.float32)
     reward = np.random.randn(4, 10, 1).astype(np.float32)
     done = np.zeros((4, 10, 1), dtype=np.float32)
+    terminated = np.zeros((4, 10, 1), dtype=np.float32)
+    truncated = np.zeros((4, 10, 1), dtype=np.float32)
     path = tmp_path / "dummy.npz"
-    np.savez(path, obs=obs, action=action, reward=reward, done=done)
+    np.savez(path, obs=obs, action=action, reward=reward, done=done, terminated=terminated, truncated=truncated)
 
     dataset = SequenceDataset(path, seq_len=5, split="all")
     sample = dataset[0]
@@ -24,6 +26,8 @@ def test_sequence_dataset_window_shapes(tmp_path) -> None:
     assert sample["action"].shape == (5, 2)
     assert sample["reward"].shape == (5, 1)
     assert sample["done"].shape == (5, 1)
+    assert sample["terminated"].shape == (5, 1)
+    assert sample["truncated"].shape == (5, 1)
     assert sample["obs"].dtype.is_floating_point
     assert sample["action"].dtype.is_floating_point
 
@@ -42,6 +46,8 @@ def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
     assert loaded.reward_buffer.shape == (3, 12, 1)
     assert sample["obs"].shape == (7, 6)
     assert sample["action"].shape == (6, 2)
+    assert sample["terminated"].shape == (6, 1)
+    assert sample["truncated"].shape == (6, 1)
 
 
 def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
@@ -64,7 +70,7 @@ def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
     normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
     batch = {
         key: torch.stack([dataset[i][key] for i in range(3)])
-        for key in ("obs", "action", "reward", "done")
+        for key in ("obs", "action", "reward", "done", "terminated")
     }
     obs = normalizer.normalize_obs(batch["obs"])
     action = normalizer.normalize_action(batch["action"])
@@ -80,9 +86,12 @@ def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
             hidden_dim=32,
         )
     )
-    loss, metrics = model.loss(obs, action, reward, batch["done"])
+    loss, metrics = model.loss(obs, action, reward, batch["done"], batch["terminated"])
     assert torch.isfinite(loss)
     assert torch.isfinite(metrics["recon_loss"])
     assert torch.isfinite(metrics["reward_loss"])
+    assert torch.isfinite(metrics["reward_loss_nonterminal"])
+    assert torch.isfinite(metrics["reward_loss_fall_terminal"])
+    assert torch.isfinite(metrics["reward_loss_post_done_padding"])
     assert torch.isfinite(metrics["kl_loss"])
     loss.backward()
