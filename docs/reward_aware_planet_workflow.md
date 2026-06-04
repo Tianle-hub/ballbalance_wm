@@ -52,6 +52,12 @@ python scripts/train_rssm.py \
   --epochs 100
 ```
 
+Rerunning the same command resumes automatically from `checkpoints/last.pt` when it exists, or
+from the older `checkpoints/latest.pt` name for existing runs. `--epochs` is the total target epoch
+count, so a checkpoint saved at epoch 37 continues with epoch 38 and stops after epoch 100. Use
+`--no-resume` to intentionally start from scratch, or `--resume-from path/to/checkpoint.pt` to choose
+a specific checkpoint.
+
 Useful knobs:
 
 ```bash

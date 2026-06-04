@@ -14,7 +14,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ball_rssm.buffer import Buffer
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.trainer import Trainer
+from ball_rssm.utils.checkpoint import load_checkpoint
 from ball_rssm.utils.seed import set_seed
+
+
+def find_resume_checkpoint(run_dir: Path, explicit_path: str | None) -> Path | None:
+    if explicit_path is not None:
+        path = Path(explicit_path)
+        if not path.exists():
+            raise FileNotFoundError(f"resume checkpoint does not exist: {path}")
+        return path
+
+    for name in ("last.pt", "latest.pt"):
+        path = run_dir / "checkpoints" / name
+        if path.exists():
+            return path
+    return None
 
 
 def main() -> None:
@@ -36,6 +51,15 @@ def main() -> None:
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--resume",
+        dest="resume",
+        action="store_true",
+        default=True,
+        help="Resume from run-dir/checkpoints/last.pt or latest.pt when present (default).",
+    )
+    parser.add_argument("--no-resume", dest="resume", action="store_false", help="Start a new training run.")
+    parser.add_argument("--resume-from", default=None, help="Explicit checkpoint path to resume from.")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -58,6 +82,18 @@ def main() -> None:
     )
     model = WorldModel(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    start_epoch = 0
+    best_val_loss = float("inf")
+
+    resume_path = find_resume_checkpoint(run_dir, args.resume_from) if args.resume else None
+    if resume_path is not None:
+        checkpoint = load_checkpoint(resume_path, device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        normalizer = Normalizer.load_state_dict(checkpoint["normalizer"]).to(device)
+        start_epoch = int(checkpoint.get("epoch", 0))
+        best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        print(f"resuming from {resume_path} at epoch {start_epoch}; target epochs={args.epochs}")
 
     config_dict = vars(args) | {"model": config.to_dict()}
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +115,8 @@ def main() -> None:
         val_fraction=args.val_fraction,
         seed=args.seed,
         train_args=vars(args),
+        start_epoch=start_epoch,
+        best_val_loss=best_val_loss,
     )
 
 

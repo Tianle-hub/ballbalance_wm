@@ -44,11 +44,18 @@ class Trainer:
         val_fraction: float,
         seed: int,
         train_args: dict[str, object],
+        start_epoch: int = 0,
+        best_val_loss: float = float("inf"),
     ) -> None:
         train_loader, val_loader = self.make_dataloaders(batch_size, seq_len, val_fraction, seed)
 
-        best_val_loss = float("inf")
-        for epoch in range(1, epochs + 1):
+        if start_epoch >= epochs:
+            print(f"checkpoint is already at epoch {start_epoch}; target epochs={epochs}, nothing to train")
+            if self.writer is not None:
+                self.writer.close()
+            return
+
+        for epoch in range(start_epoch + 1, epochs + 1):
             self.model.train()
             train_metrics = self.run_epoch(train_loader, optimizer=self.optimizer, desc=f"epoch {epoch} train")
             self.model.eval()
@@ -149,6 +156,7 @@ class Trainer:
             "epoch": epoch,
             "best_val_loss": best_val_loss,
         }
+        save_checkpoint(state, self.ckpt_dir / "last.pt")
         save_checkpoint(state, self.ckpt_dir / "latest.pt")
         if is_best:
             save_checkpoint(state, self.ckpt_dir / "best.pt")
