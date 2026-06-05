@@ -23,11 +23,13 @@ class BallBalanceConfig:
     angle_tau: float = 0.08
     init_pos_range: float = 0.20
     init_vel_range: float = 0.05
-    reward_pos_weight: float = 10.0
-    reward_vel_weight: float = 0.1
-    reward_angle_weight: float = 0.01
-    reward_action_weight: float = 0.001
-    fall_penalty: float = 100.0
+    reward_pos_weight: float = 1.0
+    reward_vel_weight: float = 0.0
+    reward_angle_weight: float = 0.0
+    reward_action_weight: float = 0.0
+    reward_min: float = -1.0
+    reward_max: float = 1.0
+    fall_penalty: float = 1.0
 
     @classmethod
     def from_config(cls, config: "BallBalanceConfig | dict[str, Any] | None") -> "BallBalanceConfig":
@@ -159,14 +161,19 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         terminated = bool(fallen)
         truncated = bool(self.step_count >= cfg.max_episode_steps)
 
-        reward = -(
-            cfg.reward_pos_weight * (x**2 + y**2)
-            + cfg.reward_vel_weight * (vx**2 + vy**2)
-            + cfg.reward_angle_weight * (theta_x**2 + theta_y**2)
-            + cfg.reward_action_weight * (theta_x_cmd**2 + theta_y_cmd**2)
-        )
         if fallen:
-            reward -= cfg.fall_penalty
+            reward = -abs(cfg.fall_penalty)
+        else:
+            max_dist = cfg.board_size / 2.0
+            pos_cost = (x**2 + y**2) / max(max_dist**2, 1e-12)
+            reward = (
+                1.0
+                - cfg.reward_pos_weight * pos_cost
+                - cfg.reward_vel_weight * (vx**2 + vy**2)
+                - cfg.reward_angle_weight * (theta_x**2 + theta_y**2)
+                - cfg.reward_action_weight * (theta_x_cmd**2 + theta_y_cmd**2)
+            )
+            reward = float(np.clip(reward, cfg.reward_min, cfg.reward_max))
 
         obs = self._get_obs()
         acceleration = np.array([ax, ay], dtype=np.float32)

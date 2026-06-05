@@ -67,10 +67,25 @@ def test_zero_action_from_zero_state_stays_near_zero() -> None:
         env.reset(seed=0)
         env.state[:] = 0.0
         for _ in range(50):
-            obs, _, terminated, truncated, _ = env.step(np.zeros(2, dtype=np.float32))
+            obs, reward, terminated, truncated, _ = env.step(np.zeros(2, dtype=np.float32))
             assert not terminated
             assert not truncated
+            assert reward == 1.0
             np.testing.assert_allclose(obs, np.zeros(6, dtype=np.float32), atol=1e-6)
+    finally:
+        env.close()
+
+
+def test_fall_reward_is_bounded_terminal_penalty() -> None:
+    env = BallBalanceEnv()
+    try:
+        env.reset(seed=0)
+        env.state[:] = np.array([0.49, 0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        _, reward, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
+        assert terminated
+        assert not truncated
+        assert info["fallen"]
+        assert reward == -1.0
     finally:
         env.close()
 

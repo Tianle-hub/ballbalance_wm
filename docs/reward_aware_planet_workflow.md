@@ -30,7 +30,13 @@ python scripts/collect_dataset.py \
   --out data/ball_balance_mpc_v1_reward_normalized.npz
 ```
 
-The dataset stores true environment rewards:
+The dataset stores true environment rewards. With the current environment defaults, rewards are bounded for smooth
+regression:
+
+```text
+normal step: 1 - ||ball_xy||^2 / (board_size / 2)^2, clipped to [-1, 1]
+fall step:   -1 and terminated=True
+```
 
 ```text
 obs:    [N, T + 1, 6]
@@ -46,10 +52,10 @@ done:   [N, T, 1]
 ```bash
 python scripts/train_rssm.py \
   --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
-  --run-dir runs/rssm_ball_v2_long_wiz_reward_model \
+  --run-dir runs/rssm_ball_v3_long_wiz_reward_continual_model \
   --seq-len 200 \
   --batch-size 256 \
-  --epochs 100
+  --epochs 30
 ```
 
 Rerunning the same command resumes automatically from `checkpoints/last.pt` when it exists, or
@@ -62,10 +68,9 @@ Useful knobs:
 
 ```bash
 --reward-loss-weight 1.0
---reward-prediction-mode raw        # raw | clip | split_fall
---reward-clip-min -5.0              # normalized reward target floor for clip/split_fall
---fall-loss-weight 1.0              # weight for fall-terminal reward/classification terms
---fall-prediction-loss-weight 1.0   # split_fall only
+--reward-prediction-mode continuation  # continuation | raw | clip | split_fall
+--continuation-loss-weight 1.0         # continuation head BCE weight
+--fall-loss-weight 1.0                 # weight for terminal transition terms
 --beta-kl 1.0
 --free-nats 1.0
 ```
@@ -76,13 +81,14 @@ Training normalizes observation, action, and reward statistics from the training
 total_loss = observation_reconstruction_mse
            + beta_kl * free_nats_clamped_kl
            + reward_loss_weight * reward_prediction_mse
+           + continuation_loss_weight * continuation_bce
 ```
 
 The reward loss uses `done` to mask out post-done padding transitions. TensorBoard also logs
 `reward_loss_nonterminal`, `reward_loss_fall_terminal`, and `reward_loss_post_done_padding` so fall
-penalties and artificial padding are visible separately. See
-[reward_model_training_issue_0604.md](reward_model_training_issue_0604.md) for the June 4 diagnosis and
-the recommended `raw`, `clip`, and `split_fall` training recipes.
+penalties and artificial padding are visible separately. In `continuation` mode the model also trains a separate
+continuation head for `terminated=False` versus `terminated=True`, so the reward head does not need to encode
+episode termination.
 
 The checkpoint contains one model state dict with encoder, RSSM dynamics, observation decoder, and reward
 model weights.
@@ -114,7 +120,8 @@ Planning objectives:
 - `hybrid`: state cost plus learned reward objective.
 
 For center stabilization, all three objectives are meaningful because the environment reward is center
-stabilization reward:
+stabilization reward. Learned-reward planning uses the predicted continuation head as
+`G_t = r_t + gamma c_t G_{t+1}` so imagined returns stop after predicted falls:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
@@ -154,7 +161,8 @@ python scripts/online_mpc_visualizer.py \
 
 ## 5. Interpretation
 
-The reward model is trained from true environment reward, not from task labels. In this environment that reward
-penalizes distance from the origin, velocity, board angle, action magnitude, and falling. It is not a universal
-goal-conditioned reward. To make learned reward planning work for random via-points, the dataset and model would
-need target-conditioned observations or a target-conditioned reward model.
+The reward model is trained from true environment reward, not from task labels. In this environment the default
+reward is a bounded center-stabilization reward with a separate terminal signal for falling. Optional velocity,
+board-angle, and action penalties still exist in `BallBalanceConfig`, but keeping them at zero gives the reward
+head the smoothest first target. To make learned reward planning work for random via-points, the dataset and model
+would need target-conditioned observations or a target-conditioned reward model.

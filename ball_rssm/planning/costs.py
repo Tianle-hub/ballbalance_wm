@@ -20,6 +20,7 @@ class CostWeights:
     w_via: float = 100.0
     w_running: float = 2.0
     w_reward: float = 1.0
+    discount: float = 0.99
 
 
 def center_stabilization_cost(
@@ -92,15 +93,33 @@ def learned_reward_cost(
     pred_reward: torch.Tensor,
     pred_obs: torch.Tensor,
     actions: torch.Tensor,
+    pred_continue: torch.Tensor | None = None,
     weights: CostWeights | None = None,
 ) -> torch.Tensor:
     """Convert predicted environment reward into a minimization objective."""
 
     weights = weights or CostWeights()
-    reward_return = pred_reward.squeeze(-1).sum(dim=-1)
+    reward_return = continuation_discounted_return(pred_reward, pred_continue, weights.discount)
     smoothness = _smoothness_cost(actions, weights).sum(dim=-1)
     boundary = _boundary_cost(pred_obs, weights).sum(dim=-1)
     return -weights.w_reward * reward_return + smoothness + boundary
+
+
+def continuation_discounted_return(
+    pred_reward: torch.Tensor,
+    pred_continue: torch.Tensor | None,
+    discount: float,
+) -> torch.Tensor:
+    reward = pred_reward.squeeze(-1)
+    batch_size, horizon = reward.shape
+    if pred_continue is None:
+        step_weights = torch.ones_like(reward)
+    else:
+        continuation = pred_continue.squeeze(-1).clamp(0.0, 1.0)
+        step_weights = torch.ones_like(reward)
+        if horizon > 1:
+            step_weights[:, 1:] = torch.cumprod(discount * continuation[:, :-1], dim=1)
+    return (step_weights * reward).sum(dim=-1)
 
 
 def _target_tensor(target_xy: torch.Tensor | tuple[float, float] | None, pred_obs: torch.Tensor) -> torch.Tensor:

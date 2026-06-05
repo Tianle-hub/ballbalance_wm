@@ -32,6 +32,7 @@ class MPCDiagnostics:
     best_action_sequence: np.ndarray
     predicted_obs: np.ndarray
     predicted_reward: np.ndarray
+    predicted_continue: np.ndarray
     cem: dict[str, object]
 
 
@@ -108,16 +109,17 @@ class RSSMMPCController:
         assert self.state is not None
 
         def cost_fn(candidate_actions_real: torch.Tensor) -> torch.Tensor:
-            pred_obs, pred_reward = self._predict_for_candidates(candidate_actions_real)
-            return self._cost(pred_obs, pred_reward, candidate_actions_real)
+            pred_obs, pred_reward, pred_continue = self._predict_for_candidates(candidate_actions_real)
+            return self._cost(pred_obs, pred_reward, pred_continue, candidate_actions_real)
 
         result = self.planner.plan(cost_fn)
         best_sequence = result.best_action_sequence.detach()
         best_action = best_sequence[0].detach().cpu().numpy().astype(np.float32)
         best_action = np.clip(best_action, self.action_space.low, self.action_space.high).astype(np.float32)
-        pred_obs_t, pred_reward_t = self._predict_for_candidates(best_sequence.unsqueeze(0))
+        pred_obs_t, pred_reward_t, pred_continue_t = self._predict_for_candidates(best_sequence.unsqueeze(0))
         pred_obs = pred_obs_t[0].detach().cpu().numpy()
         pred_reward = pred_reward_t[0].detach().cpu().numpy()
+        pred_continue = pred_continue_t[0].detach().cpu().numpy()
 
         self.planner.shift_mean(best_sequence)
         self.prev_action = best_action.reshape(self.action_dim)
@@ -127,6 +129,7 @@ class RSSMMPCController:
             best_action_sequence=best_sequence.detach().cpu().numpy(),
             predicted_obs=pred_obs,
             predicted_reward=pred_reward,
+            predicted_continue=pred_continue,
             cem=result.diagnostics,
         )
         return best_action.reshape(self.action_space.shape)
@@ -141,10 +144,13 @@ class RSSMMPCController:
             return self.model.posterior_update(self.state, action_norm, obs_norm)
 
     def _predict_obs_for_candidates(self, candidate_actions_real: torch.Tensor) -> torch.Tensor:
-        pred_obs, _ = self._predict_for_candidates(candidate_actions_real)
+        pred_obs, _, _ = self._predict_for_candidates(candidate_actions_real)
         return pred_obs
 
-    def _predict_for_candidates(self, candidate_actions_real: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _predict_for_candidates(
+        self,
+        candidate_actions_real: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         assert self.state is not None
         num_candidates = candidate_actions_real.shape[0]
         action_norm = self.normalizer.normalize_action(candidate_actions_real)
@@ -155,11 +161,22 @@ class RSSMMPCController:
             assert isinstance(prior, dict)
             obs_norm_pred = self.model.decode_state_sequence(prior)
             reward_norm_pred = self.model.predict_reward_sequence(prior)
-            return self.normalizer.denormalize_obs(obs_norm_pred), self.normalizer.denormalize_reward(reward_norm_pred)
+            continue_pred = self.model.predict_continuation_sequence(prior)
+            return (
+                self.normalizer.denormalize_obs(obs_norm_pred),
+                self.normalizer.denormalize_reward(reward_norm_pred),
+                continue_pred,
+            )
 
-    def _cost(self, pred_obs: torch.Tensor, pred_reward: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def _cost(
+        self,
+        pred_obs: torch.Tensor,
+        pred_reward: torch.Tensor,
+        pred_continue: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
         if self.planning_objective == "reward":
-            return learned_reward_cost(pred_reward, pred_obs, actions, self.weights)
+            return learned_reward_cost(pred_reward, pred_obs, actions, pred_continue, self.weights)
 
         if self.cost_mode == "center":
             state_cost = center_stabilization_cost(pred_obs, actions, self.weights)
@@ -177,7 +194,7 @@ class RSSMMPCController:
         if self.planning_objective == "state_cost":
             return state_cost
         if self.planning_objective == "hybrid":
-            return state_cost + learned_reward_cost(pred_reward, pred_obs, actions, self.weights)
+            return state_cost + learned_reward_cost(pred_reward, pred_obs, actions, pred_continue, self.weights)
         raise ValueError(f"Unsupported planning_objective={self.planning_objective!r}")
 
     def diagnostics_dict(self) -> dict[str, Any]:
@@ -188,5 +205,6 @@ class RSSMMPCController:
             "best_action_sequence": self.last_diagnostics.best_action_sequence,
             "predicted_obs": self.last_diagnostics.predicted_obs,
             "predicted_reward": self.last_diagnostics.predicted_reward,
+            "predicted_continue": self.last_diagnostics.predicted_continue,
             "cem": self.last_diagnostics.cem,
         }

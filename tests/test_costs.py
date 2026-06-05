@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import torch
 
-from ball_rssm.planning.costs import center_stabilization_cost, learned_reward_cost, point_stabilization_cost, timed_viapoint_cost
+from ball_rssm.planning.costs import (
+    center_stabilization_cost,
+    continuation_discounted_return,
+    learned_reward_cost,
+    point_stabilization_cost,
+    timed_viapoint_cost,
+)
 
 
 def test_center_cost_shape_and_position_ordering() -> None:
@@ -53,3 +59,15 @@ def test_learned_reward_cost_prefers_higher_reward() -> None:
 
     assert cost.shape == (2,)
     assert cost[0] < cost[1]
+
+
+def test_continuation_discounted_return_stops_after_terminal() -> None:
+    pred_reward = torch.ones(2, 4, 1)
+    pred_continue = torch.ones(2, 4, 1)
+    pred_continue[1, 1:, 0] = 0.0
+
+    returns = continuation_discounted_return(pred_reward, pred_continue, discount=1.0)
+
+    assert returns.shape == (2,)
+    assert returns[0] == 4.0
+    assert returns[1] == 2.0

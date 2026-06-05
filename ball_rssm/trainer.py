@@ -136,6 +136,16 @@ class Trainer:
                 reward_loss = torch.mean((reward_pred - reward_target) ** 2)
                 out[f"obs_h{horizon}"] = float(obs_loss.detach().cpu())
                 out[f"reward_h{horizon}"] = float(reward_loss.detach().cpu())
+                if "terminated" in batch:
+                    continuation_pred = self.model.open_loop_predict_continuation(
+                        obs,
+                        action,
+                        context_len=context_len,
+                        horizon=horizon,
+                    )
+                    continuation_target = 1.0 - batch["terminated"][:, context_len : context_len + horizon]
+                    continuation_loss = torch.mean((continuation_pred - continuation_target) ** 2)
+                    out[f"continuation_h{horizon}"] = float(continuation_loss.detach().cpu())
             else:
                 out[f"obs_h{horizon}"] = float(obs_loss.detach().cpu())
         return out

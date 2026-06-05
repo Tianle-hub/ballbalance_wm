@@ -47,12 +47,13 @@ def main() -> None:
     parser.add_argument("--beta-kl", type=float, default=1.0)
     parser.add_argument("--free-nats", type=float, default=1.0)
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
-    parser.add_argument("--reward-prediction-mode", choices=["raw", "clip", "split_fall"], default="raw")
-    parser.add_argument("--reward-clip-min", type=float, default=-5.0)
-    parser.add_argument("--fall-reward-threshold", type=float, default=-10.0)
+    parser.add_argument("--reward-prediction-mode", choices=["raw", "clip", "split_fall", "continuation"], default="continuation")
+    parser.add_argument("--reward-clip-min", type=float, default=-1.0)
+    parser.add_argument("--fall-reward-threshold", type=float, default=-0.99)
     parser.add_argument("--fall-penalty-value", type=float, default=-30.0)
     parser.add_argument("--fall-loss-weight", type=float, default=1.0)
     parser.add_argument("--fall-prediction-loss-weight", type=float, default=1.0)
+    parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--grad-clip", type=float, default=100.0)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
@@ -91,6 +92,7 @@ def main() -> None:
         fall_penalty_value=args.fall_penalty_value,
         fall_loss_weight=args.fall_loss_weight,
         fall_prediction_loss_weight=args.fall_prediction_loss_weight,
+        continuation_loss_weight=args.continuation_loss_weight,
     )
     model = WorldModel(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)

@@ -31,6 +31,8 @@ Action:
 ```
 
 The board is a square centered at the origin. The ball falls when `abs(x)` or `abs(y)` exceeds half the board size.
+The default reward is bounded for reward-model regression: centered stable states are near `1`, edge states approach
+`0` or below, and falling returns `-1` with `terminated=True`.
 
 ## Run Rollouts
 
@@ -129,7 +131,8 @@ python scripts/train_rssm.py \
   --seq-len 50 \
   --batch-size 128 \
   --epochs 100 \
-  --reward-loss-weight 1.0
+  --reward-loss-weight 1.0 \
+  --reward-prediction-mode continuation
 ```
 
 !!! Following parameters work well for mpc control
@@ -140,7 +143,8 @@ python scripts/train_rssm.py \
   --seq-len 200 \
   --batch-size 256 \
   --epochs 100 \
-  --reward-loss-weight 1.0
+  --reward-loss-weight 1.0 \
+  --reward-prediction-mode continuation
 ```
 
 Evaluate posterior reconstruction, one-step prior prediction, and open-loop rollout:

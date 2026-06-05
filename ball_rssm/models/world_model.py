@@ -25,12 +25,13 @@ class WorldModelConfig:
     beta_kl: float = 1.0
     free_nats: float = 1.0
     reward_loss_weight: float = 1.0
-    reward_prediction_mode: str = "raw"
-    reward_clip_min: float = -5.0
-    fall_reward_threshold: float = -10.0
+    reward_prediction_mode: str = "continuation"
+    reward_clip_min: float = -1.0
+    fall_reward_threshold: float = -0.99
     fall_penalty_value: float = -30.0
     fall_loss_weight: float = 1.0
     fall_prediction_loss_weight: float = 1.0
+    continuation_loss_weight: float = 1.0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -39,8 +40,8 @@ class WorldModelConfig:
 class WorldModel(nn.Module):
     def __init__(self, config: WorldModelConfig) -> None:
         super().__init__()
-        if config.reward_prediction_mode not in {"raw", "clip", "split_fall"}:
-            raise ValueError("reward_prediction_mode must be one of: raw, clip, split_fall")
+        if config.reward_prediction_mode not in {"raw", "clip", "split_fall", "continuation"}:
+            raise ValueError("reward_prediction_mode must be one of: raw, clip, split_fall, continuation")
         self.config = config
         self.encoder = build_mlp(config.obs_dim, config.hidden_dim, config.embed_dim)
         self.rssm = RSSM(
@@ -54,6 +55,8 @@ class WorldModel(nn.Module):
         feature_dim = config.deter_dim + config.stoch_dim
         self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
         self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
+        if config.reward_prediction_mode == "continuation":
+            self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)
         if config.reward_prediction_mode == "split_fall":
             self.fall_model = build_mlp(feature_dim, config.hidden_dim, 1)
 
@@ -69,8 +72,10 @@ class WorldModel(nn.Module):
 
         recon = self.decode_features(posterior["h"], posterior["z"])
         prior_recon = self.decode_features(prior["h"], prior["z"])
-        reward_cont_pred, fall_logit = self.reward_outputs_from_features(posterior["h"], posterior["z"])
-        prior_reward_cont_pred, prior_fall_logit = self.reward_outputs_from_features(prior["h"], prior["z"])
+        reward_cont_pred, continuation_logit, fall_logit = self.reward_outputs_from_features(posterior["h"], posterior["z"])
+        prior_reward_cont_pred, prior_continuation_logit, prior_fall_logit = self.reward_outputs_from_features(
+            prior["h"], prior["z"]
+        )
         reward_pred = self.combine_reward_outputs(reward_cont_pred, fall_logit)
         prior_reward_pred = self.combine_reward_outputs(prior_reward_cont_pred, prior_fall_logit)
         return {
@@ -81,6 +86,8 @@ class WorldModel(nn.Module):
             "prior_reward_pred": prior_reward_pred,
             "reward_cont_pred": reward_cont_pred,
             "prior_reward_cont_pred": prior_reward_cont_pred,
+            "continuation_logit": continuation_logit,
+            "prior_continuation_logit": prior_continuation_logit,
             "fall_logit": fall_logit,
             "prior_fall_logit": prior_fall_logit,
         }
@@ -97,12 +104,14 @@ class WorldModel(nn.Module):
         recon = out["recon"]
         reward_pred = out["reward_pred"]
         reward_cont_pred = out["reward_cont_pred"]
+        continuation_logit = out["continuation_logit"]
         fall_logit = out["fall_logit"]
         posterior = out["posterior"]
         prior = out["prior"]
         assert isinstance(recon, torch.Tensor)
         assert isinstance(reward_pred, torch.Tensor)
         assert isinstance(reward_cont_pred, torch.Tensor)
+        assert continuation_logit is None or isinstance(continuation_logit, torch.Tensor)
         assert fall_logit is None or isinstance(fall_logit, torch.Tensor)
         assert isinstance(posterior, dict)
         assert isinstance(prior, dict)
@@ -119,6 +128,7 @@ class WorldModel(nn.Module):
         recon_loss = masked_mean(recon_err, effective_mask)
         reward_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
         fall_prediction_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
+        continuation_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
         reward_metrics: dict[str, torch.Tensor] = {}
         if reward_seq is not None:
             if reward_seq.shape[:2] != action_seq.shape[:2]:
@@ -168,6 +178,29 @@ class WorldModel(nn.Module):
                         "fall_prob_fall_terminal": masked_mean(fall_prob, fall_terminal_mask),
                     }
                 )
+            if self.config.reward_prediction_mode == "continuation":
+                if continuation_logit is None:
+                    raise RuntimeError("continuation mode requires continuation_model")
+                continuation_target = (~fall_terminal_mask).unsqueeze(-1).to(dtype=obs_seq.dtype)
+                continuation_bce = nn.functional.binary_cross_entropy_with_logits(
+                    continuation_logit[:, 1:],
+                    continuation_target,
+                    reduction="none",
+                ).squeeze(-1)
+                continuation_weights = torch.where(
+                    fall_terminal_mask,
+                    torch.full_like(continuation_bce, self.config.fall_loss_weight),
+                    torch.ones_like(continuation_bce),
+                )
+                continuation_loss = masked_weighted_mean(continuation_bce, effective_mask, continuation_weights)
+                continuation_prob = torch.sigmoid(continuation_logit[:, 1:]).squeeze(-1)
+                reward_metrics.update(
+                    {
+                        "continuation_loss": continuation_loss.detach(),
+                        "continuation_prob_nonterminal": masked_mean(continuation_prob, nonterminal_mask),
+                        "continuation_prob_terminal": masked_mean(continuation_prob, fall_terminal_mask),
+                    }
+                )
         posterior_dist = independent_normal(posterior["mean"], posterior["std"])
         prior_dist = independent_normal(prior["mean"], prior["std"])
         kl = kl_divergence(posterior_dist, prior_dist)
@@ -178,12 +211,14 @@ class WorldModel(nn.Module):
             + self.config.beta_kl * kl_loss
             + self.config.reward_loss_weight * reward_loss
             + self.config.fall_prediction_loss_weight * fall_prediction_loss
+            + self.config.continuation_loss_weight * continuation_loss
         )
 
         metrics = {
             "total_loss": total_loss.detach(),
             "recon_loss": recon_loss.detach(),
             "reward_loss": reward_loss.detach(),
+            "continuation_loss": continuation_loss.detach(),
             "kl_loss": kl_loss.detach(),
             "raw_kl": raw_kl.detach(),
             "posterior_std_mean": posterior["std"].detach().mean(),
@@ -247,6 +282,30 @@ class WorldModel(nn.Module):
         assert isinstance(prior, dict)
         return self.predict_reward_from_features(prior["h"], prior["z"])
 
+    def open_loop_predict_continuation(
+        self,
+        obs_seq: torch.Tensor,
+        action_seq: torch.Tensor,
+        context_len: int,
+        horizon: int,
+    ) -> torch.Tensor:
+        if context_len < 0:
+            raise ValueError("context_len must be non-negative")
+        horizon = min(horizon, action_seq.shape[1] - context_len)
+        if horizon <= 0:
+            raise ValueError("No future actions available for open-loop prediction")
+
+        context_obs = obs_seq[:, : context_len + 1]
+        context_action = action_seq[:, :context_len]
+        context_out = self.forward(context_obs, context_action)
+        start_state = context_out["last_state"]
+        assert isinstance(start_state, RSSMState)
+        future_actions = action_seq[:, context_len : context_len + horizon]
+        imagined = self.rssm.imagine(start_state, future_actions)
+        prior = imagined["prior"]
+        assert isinstance(prior, dict)
+        return self.predict_continuation_sequence(prior)
+
     def encode_obs(self, obs_norm: torch.Tensor) -> torch.Tensor:
         return self.encoder(obs_norm)
 
@@ -277,6 +336,9 @@ class WorldModel(nn.Module):
     def predict_reward_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
         return self.predict_reward_from_features(states["h"], states["z"])
 
+    def predict_continuation_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self.predict_continuation_from_features(states["h"], states["z"])
+
     def decode_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
@@ -284,23 +346,35 @@ class WorldModel(nn.Module):
         return decoded.reshape(*feature.shape[:-1], -1)
 
     def predict_reward_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        reward_cont, fall_logit = self.reward_outputs_from_features(h, z)
+        reward_cont, _, fall_logit = self.reward_outputs_from_features(h, z)
         return self.combine_reward_outputs(reward_cont, fall_logit)
+
+    def predict_continuation_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        feature = torch.cat([h, z], dim=-1)
+        if not hasattr(self, "continuation_model"):
+            return torch.ones(*feature.shape[:-1], 1, device=feature.device, dtype=feature.dtype)
+        flat = feature.reshape(-1, feature.shape[-1])
+        continuation_logit = self.continuation_model(flat).reshape(*feature.shape[:-1], -1)
+        return torch.sigmoid(continuation_logit)
 
     def reward_outputs_from_features(
         self,
         h: torch.Tensor,
         z: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
         reward = self.reward_model(flat)
         reward = reward.reshape(*feature.shape[:-1], -1)
+        continuation_logit = None
+        if hasattr(self, "continuation_model"):
+            continuation_flat = self.continuation_model(flat)
+            continuation_logit = continuation_flat.reshape(*feature.shape[:-1], -1)
         fall_logit = None
         if hasattr(self, "fall_model"):
             fall_flat = self.fall_model(flat)
             fall_logit = fall_flat.reshape(*feature.shape[:-1], -1)
-        return reward, fall_logit
+        return reward, continuation_logit, fall_logit
 
     def combine_reward_outputs(
         self,

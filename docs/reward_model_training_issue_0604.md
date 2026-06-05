@@ -1,5 +1,9 @@
 # Reward Model Training Issue 0604
 
+> Historical note: this diagnosis describes the older environment reward scale where falling added about `-100`.
+> The active environment now uses bounded dense rewards and `reward=-1, terminated=True` for falling, with
+> `--reward-prediction-mode continuation` as the default training path.
+
 ## 结论
 
 当前 `runs/rssm_ball_v2_long_wiz_reward_model` 的主要问题不是模型太简单，也不是环境 reward 公式写错。
