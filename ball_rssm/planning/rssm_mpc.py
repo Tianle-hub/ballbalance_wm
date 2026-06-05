@@ -12,7 +12,7 @@ from gymnasium import spaces
 
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.models.rssm import RSSMState, repeat_state
-from ball_rssm.planning.cem import CEMPlanner
+from ball_rssm.planning.cem import CEMGDPlanner, CEMPlanner
 from ball_rssm.planning.costs import (
     CostWeights,
     center_stabilization_cost,
@@ -24,6 +24,7 @@ from ball_rssm.utils.checkpoint import load_checkpoint
 
 CostMode = Literal["center", "point", "timed_viapoint"]
 PlanningObjective = Literal["state_cost", "reward", "hybrid"]
+PlannerType = Literal["cem", "cem_gd"]
 
 
 @dataclass
@@ -50,6 +51,10 @@ class RSSMMPCController:
         device: torch.device | str = "cpu",
         cost_mode: CostMode = "center",
         planning_objective: PlanningObjective = "state_cost",
+        planner_type: str = "cem",
+        gd_num_sequences: int = 3,
+        gd_iterations: int = 15,
+        gd_lr: float = 0.01,
         target_xy: tuple[float, float] | None = None,
         via_step: int | None = None,
         stochastic: bool = False,
@@ -65,6 +70,7 @@ class RSSMMPCController:
         self.model = WorldModel(WorldModelConfig.from_dict(checkpoint["config"])).to(self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
+        self.model.requires_grad_(False)
         self.normalizer = Normalizer.load_state_dict(checkpoint["normalizer"]).to(self.device)
 
         self.action_space = action_space
@@ -72,6 +78,7 @@ class RSSMMPCController:
         self.horizon = horizon
         self.cost_mode = cost_mode
         self.planning_objective = planning_objective
+        self.planner_type = _normalize_planner_type(planner_type)
         self.target_xy = target_xy
         self.via_step = via_step if via_step is not None else max(0, horizon - 1)
         self.stochastic = stochastic
@@ -83,7 +90,15 @@ class RSSMMPCController:
 
         action_low = np.asarray(action_space.low, dtype=np.float32).reshape(self.action_dim)
         action_high = np.asarray(action_space.high, dtype=np.float32).reshape(self.action_dim)
-        self.planner = CEMPlanner(
+        planner_cls = CEMGDPlanner if self.planner_type == "cem_gd" else CEMPlanner
+        planner_kwargs: dict[str, object] = {}
+        if self.planner_type == "cem_gd":
+            planner_kwargs = {
+                "gd_num_sequences": gd_num_sequences,
+                "gd_iterations": gd_iterations,
+                "gd_lr": gd_lr,
+            }
+        self.planner = planner_cls(
             action_dim=self.action_dim,
             horizon=horizon,
             num_candidates=num_candidates,
@@ -93,6 +108,7 @@ class RSSMMPCController:
             action_high=action_high,
             device=self.device,
             seed=seed,
+            **planner_kwargs,
         )
 
     def reset(self, initial_obs: np.ndarray | None = None) -> None:
@@ -171,9 +187,10 @@ class RSSMMPCController:
 
         assert self.state is not None
         num_candidates = candidate_actions_real.shape[0]
-        action_norm = self.normalizer.normalize_action(candidate_actions_real)
-        start_state = repeat_state(self.state, num_candidates)
-        with torch.no_grad():
+        grad_context = torch.enable_grad() if candidate_actions_real.requires_grad else torch.no_grad()
+        with grad_context:
+            action_norm = self.normalizer.normalize_action(candidate_actions_real)
+            start_state = repeat_state(self.state, num_candidates)
             # Candidate rollouts use prior imagination only; future observations
             # are unavailable during planning.
             imagined = self.model.imagine_rollout(start_state, action_norm, deterministic=not self.stochastic)
@@ -234,3 +251,12 @@ class RSSMMPCController:
             "predicted_continue": self.last_diagnostics.predicted_continue,
             "cem": self.last_diagnostics.cem,
         }
+
+
+def _normalize_planner_type(planner_type: str) -> PlannerType:
+    normalized = planner_type.lower().replace("-", "_")
+    if normalized == "cem":
+        return "cem"
+    if normalized in {"cem_gd", "cemgd"}:
+        return "cem_gd"
+    raise ValueError(f"Unsupported planner_type={planner_type!r}")

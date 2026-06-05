@@ -29,6 +29,10 @@ def main() -> None:
     parser.add_argument("--num-elites", type=int, default=64)
     parser.add_argument("--num-iterations", type=int, default=3)
     parser.add_argument("--planning-objective", choices=["state_cost", "reward", "hybrid"], default="state_cost")
+    parser.add_argument("--planner-type", choices=["cem", "cem_gd"], default="cem")
+    parser.add_argument("--gd-num-sequences", type=int, default=3)
+    parser.add_argument("--gd-iterations", type=int, default=15)
+    parser.add_argument("--gd-lr", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -52,6 +56,10 @@ def main() -> None:
                 device=args.device,
                 cost_mode="center" if target == (0.0, 0.0) else "point",
                 planning_objective=args.planning_objective,
+                planner_type=args.planner_type,
+                gd_num_sequences=args.gd_num_sequences,
+                gd_iterations=args.gd_iterations,
+                gd_lr=args.gd_lr,
                 target_xy=None if target == (0.0, 0.0) else target,
                 seed=args.seed,
             )

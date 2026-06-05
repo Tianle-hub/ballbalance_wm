@@ -129,6 +129,23 @@ python scripts/run_rssm_mpc_center.py \
   --planning-objective reward
 ```
 
+CEM-GD planner
+```bash
+python scripts/run_rssm_mpc_center.py \
+  --checkpoint /path/to/checkpoint.pt \
+  --planner-type cem_gd \
+  --num-episodes 1 \
+  --max-steps 100 \
+  --horizon 25 \
+  --num-candidates 1024 \
+  --num-elites 100 \
+  --num-iterations 4 \
+  --gd-num-sequences 3 \
+  --gd-iterations 15 \
+  --gd-lr 0.01 \
+  --device cuda
+```
+
 For via-point tasks, keep `state_cost` unless you explicitly want to bias toward the environment's center
 reward. The true env reward does not include arbitrary via-point targets.
 
