@@ -52,7 +52,7 @@ done:   [N, T, 1]
 ```bash
 python scripts/train_rssm.py \
   --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
-  --run-dir runs/rssm_ball_v3_long_wiz_reward_continual_model \
+  --run-dir runs/rssm_ball_v4_long_wiz_reward_continual_model \
   --seq-len 200 \
   --batch-size 256 \
   --epochs 30
