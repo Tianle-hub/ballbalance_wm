@@ -24,9 +24,10 @@ class BallBalanceConfig:
     init_pos_range: float = 0.20
     init_vel_range: float = 0.05
     reward_pos_weight: float = 1.0
-    reward_vel_weight: float = 0.0
-    reward_angle_weight: float = 0.0
-    reward_action_weight: float = 0.0
+    # TODO: test following weight
+    reward_vel_weight: float = 0.10
+    reward_angle_weight: float = 2.0
+    reward_action_weight: float = 0.05
     reward_min: float = -1.0
     reward_max: float = 1.0
     fall_penalty: float = 1.0
