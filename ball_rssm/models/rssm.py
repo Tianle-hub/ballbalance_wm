@@ -21,6 +21,8 @@ class RSSMState:
 
 
 class RSSM(nn.Module):
+    """Gaussian RSSM with deterministic GRU memory and stochastic latent state."""
+
     def __init__(
         self,
         action_dim: int,
@@ -44,6 +46,8 @@ class RSSM(nn.Module):
         self.posterior_net = build_mlp(deter_dim + embed_dim, hidden_dim, 2 * stoch_dim)
 
     def init_state(self, batch_size: int, device: torch.device | str) -> RSSMState:
+        """Create the zero initial latent belief for a batch."""
+
         h = torch.zeros(batch_size, self.deter_dim, device=device)
         z = torch.zeros(batch_size, self.stoch_dim, device=device)
         mean = torch.zeros(batch_size, self.stoch_dim, device=device)
@@ -56,6 +60,8 @@ class RSSM(nn.Module):
         action: torch.Tensor,
         deterministic: bool = False,
     ) -> tuple[RSSMState, Independent]:
+        """Predict the next prior state from previous latent state and action."""
+
         # Imagination step: advance latent dynamics with no observation correction.
         x = torch.cat([prev_state.z, action], dim=-1)
         h = self.gru(x, prev_state.h)
@@ -70,6 +76,12 @@ class RSSM(nn.Module):
         action: torch.Tensor,
         embed: torch.Tensor,
     ) -> tuple[RSSMState, RSSMState, Independent, Independent]:
+        """Update one timestep with an observation embedding.
+
+        Returns posterior state, prior state, prior distribution, and posterior
+        distribution for KL training.
+        """
+
         # Observation step: first build the action-conditioned prior, then infer z_t
         # from the prior memory and current observation embedding.
         prior_state, prior_dist = self.img_step(prev_state, action)
@@ -80,6 +92,8 @@ class RSSM(nn.Module):
         return posterior_state, prior_state, prior_dist, posterior_dist
 
     def observe(self, embed_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
+        """Infer posterior/prior latent sequences for a full observation window."""
+
         batch_size, obs_steps, _ = embed_seq.shape
         device = embed_seq.device
         prev = self.init_state(batch_size, device)
@@ -114,6 +128,8 @@ class RSSM(nn.Module):
         action_seq: torch.Tensor,
         deterministic: bool = False,
     ) -> dict[str, object]:
+        """Roll the prior forward from a start state under future actions."""
+
         prev = start_state
         states: list[RSSMState] = []
         dists: list[Independent] = []
@@ -134,6 +150,8 @@ class RSSM(nn.Module):
 
 
 def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
+    """Tile one RSSM state across a candidate batch."""
+
     # CEM evaluates many action candidates from the same current belief state.
     return RSSMState(
         h=state.h.repeat(repeats, 1),
@@ -144,6 +162,8 @@ def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
 
 
 def stack_states(states: list[RSSMState]) -> dict[str, torch.Tensor]:
+    """Stack per-step RSSMState objects into time-major dictionaries."""
+
     # Convert a Python list of per-step states into [batch, time, dim] tensors.
     return {
         "h": torch.stack([state.h for state in states], dim=1),

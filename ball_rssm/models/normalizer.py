@@ -10,6 +10,8 @@ import torch
 
 @dataclass
 class Normalizer:
+    """Stores affine normalization statistics for model training and planning."""
+
     obs_mean: torch.Tensor
     obs_std: torch.Tensor
     action_mean: torch.Tensor
@@ -20,6 +22,8 @@ class Normalizer:
 
     @classmethod
     def from_arrays(cls, obs: np.ndarray, action: np.ndarray, reward: np.ndarray | None = None, eps: float = 1e-6) -> "Normalizer":
+        """Estimate normalization statistics from episode-major arrays."""
+
         # Statistics are computed over the selected training split and saved with
         # the checkpoint so planning uses the same scale as training.
         obs_flat = obs.reshape(-1, obs.shape[-1]).astype(np.float32)
@@ -42,6 +46,8 @@ class Normalizer:
         )
 
     def to(self, device: torch.device | str) -> "Normalizer":
+        """Move stored tensor statistics to a torch device."""
+
         self.obs_mean = self.obs_mean.to(device)
         self.obs_std = self.obs_std.to(device)
         self.action_mean = self.action_mean.to(device)
@@ -71,6 +77,8 @@ class Normalizer:
         return reward * self.reward_std + self.reward_mean
 
     def state_dict(self) -> dict[str, object]:
+        """Serialize normalization tensors for checkpoints."""
+
         return {
             "obs_mean": self.obs_mean.detach().cpu(),
             "obs_std": self.obs_std.detach().cpu(),
@@ -83,6 +91,8 @@ class Normalizer:
 
     @classmethod
     def load_state_dict(cls, state: dict[str, object]) -> "Normalizer":
+        """Reconstruct normalization statistics from a checkpoint state."""
+
         return cls(
             obs_mean=torch.as_tensor(state["obs_mean"], dtype=torch.float32),
             obs_std=torch.as_tensor(state["obs_std"], dtype=torch.float32),

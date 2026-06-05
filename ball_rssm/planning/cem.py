@@ -20,6 +20,8 @@ class CEMResult:
 
 
 class CEMPlanner:
+    """Cross-entropy optimizer over finite-horizon continuous action sequences."""
+
     def __init__(
         self,
         action_dim: int,
@@ -64,11 +66,15 @@ class CEMPlanner:
         self.reset_distribution()
 
     def reset_distribution(self) -> None:
+        """Reset CEM sampling distribution to zero mean and initial std."""
+
         # Mean/std parameterize the sampling distribution over the whole action horizon.
         self.mean = torch.zeros(self.horizon, self.action_dim, device=self.device)
         self.std = self.init_std.clone().clamp_min(self.min_std)
 
     def shift_mean(self, previous_sequence: torch.Tensor) -> None:
+        """Warm-start the next MPC step from the previous best sequence."""
+
         previous_sequence = torch.as_tensor(previous_sequence, device=self.device, dtype=torch.float32)
         if previous_sequence.shape != (self.horizon, self.action_dim):
             raise ValueError(f"expected previous_sequence shape {(self.horizon, self.action_dim)}")
@@ -79,6 +85,8 @@ class CEMPlanner:
         self.mean = torch.clamp(self.mean, self.action_low, self.action_high)
 
     def plan(self, cost_fn: CostFn) -> CEMResult:
+        """Optimize action sequence candidates under a batched cost function."""
+
         best_sequence: torch.Tensor | None = None
         best_cost = torch.tensor(float("inf"), device=self.device)
         best_cost_per_iter: list[float] = []
@@ -135,6 +143,8 @@ class CEMPlanner:
 
 
 def _as_action_tensor(value: np.ndarray | torch.Tensor | float, horizon: int, action_dim: int, device: torch.device) -> torch.Tensor:
+    """Broadcast scalar/per-action bounds to [horizon, action_dim]."""
+
     tensor = torch.as_tensor(value, dtype=torch.float32, device=device)
     if tensor.ndim == 0:
         tensor = tensor.expand(horizon, action_dim)

@@ -38,6 +38,8 @@ class WorldModelConfig:
 
 
 class WorldModel(nn.Module):
+    """RSSM world model with observation, reward, and continuation heads."""
+
     def __init__(self, config: WorldModelConfig) -> None:
         super().__init__()
         self.config = config
@@ -58,6 +60,8 @@ class WorldModel(nn.Module):
         self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)
 
     def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
+        """Encode observations, run RSSM inference, and decode all prediction heads."""
+
         batch_size, obs_steps, obs_dim = obs_seq.shape
         embed = self.encoder(obs_seq.reshape(batch_size * obs_steps, obs_dim)).reshape(batch_size, obs_steps, -1)
         rssm_out = self.rssm.observe(embed, action_seq)
@@ -91,6 +95,13 @@ class WorldModel(nn.Module):
         done_seq: torch.Tensor | None = None,
         terminated_seq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute RSSM training loss and detached logging metrics.
+
+        The action/reward/done tensors have T steps, while obs_seq has T+1
+        observations. Reward and continuation targets are aligned to posterior
+        latents at indices 1..T.
+        """
+
         out = self.forward(obs_seq, action_seq)
         recon = out["recon"]
         reward_pred = out["reward_pred"]
@@ -179,6 +190,8 @@ class WorldModel(nn.Module):
         return total_loss, metrics
 
     def reconstruct(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> torch.Tensor:
+        """Return posterior reconstruction for an observed sequence."""
+
         out = self.forward(obs_seq, action_seq)
         recon = out["recon"]
         assert isinstance(recon, torch.Tensor)
@@ -191,6 +204,8 @@ class WorldModel(nn.Module):
         context_len: int,
         horizon: int,
     ) -> torch.Tensor:
+        """Predict future observations using posterior context then prior rollout."""
+
         if context_len < 0:
             raise ValueError("context_len must be non-negative")
         horizon = min(horizon, action_seq.shape[1] - context_len)
@@ -216,6 +231,8 @@ class WorldModel(nn.Module):
         context_len: int,
         horizon: int,
     ) -> torch.Tensor:
+        """Predict future rewards over an open-loop prior rollout."""
+
         if context_len < 0:
             raise ValueError("context_len must be non-negative")
         horizon = min(horizon, action_seq.shape[1] - context_len)
@@ -240,6 +257,8 @@ class WorldModel(nn.Module):
         context_len: int,
         horizon: int,
     ) -> torch.Tensor:
+        """Predict future continuation probabilities over an open-loop prior rollout."""
+
         if context_len < 0:
             raise ValueError("context_len must be non-negative")
         horizon = min(horizon, action_seq.shape[1] - context_len)
@@ -258,9 +277,13 @@ class WorldModel(nn.Module):
         return self.predict_continuation_sequence(prior)
 
     def encode_obs(self, obs_norm: torch.Tensor) -> torch.Tensor:
+        """Embed normalized low-dimensional observations."""
+
         return self.encoder(obs_norm)
 
     def initial_state(self, batch_size: int, device: torch.device | str) -> RSSMState:
+        """Create an initial RSSM state through the contained dynamics model."""
+
         return self.rssm.init_state(batch_size, device)
 
     def posterior_update(
@@ -269,6 +292,8 @@ class WorldModel(nn.Module):
         prev_action_norm: torch.Tensor,
         obs_norm: torch.Tensor,
     ) -> RSSMState:
+        """Assimilate one real observation into the current RSSM belief."""
+
         embed = self.encode_obs(obs_norm)
         posterior, _, _, _ = self.rssm.obs_step(prev_state, prev_action_norm, embed)
         return posterior
@@ -279,28 +304,42 @@ class WorldModel(nn.Module):
         action_seq_norm: torch.Tensor,
         deterministic: bool = True,
     ) -> dict[str, object]:
+        """Imagine a latent rollout from a current belief and normalized actions."""
+
         return self.rssm.imagine(start_state, action_seq_norm, deterministic=deterministic)
 
     def decode_state_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Decode RSSM state features into normalized observations."""
+
         return self.decode_features(states["h"], states["z"])
 
     def predict_reward_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Predict normalized rewards from RSSM state features."""
+
         return self.predict_reward_from_features(states["h"], states["z"])
 
     def predict_continuation_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Predict continuation probabilities from RSSM state features."""
+
         return self.predict_continuation_from_features(states["h"], states["z"])
 
     def decode_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Decode concatenated [h, z] features, preserving leading dimensions."""
+
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
         decoded = self.decoder(flat)
         return decoded.reshape(*feature.shape[:-1], -1)
 
     def predict_reward_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Predict reward from deterministic and stochastic latent features."""
+
         reward, _ = self.reward_outputs_from_features(h, z)
         return reward
 
     def predict_continuation_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Predict probability that imagined rollout continues after each state."""
+
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
         continuation_logit = self.continuation_model(flat).reshape(*feature.shape[:-1], -1)
@@ -311,6 +350,8 @@ class WorldModel(nn.Module):
         h: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run reward and continuation heads on concatenated RSSM features."""
+
         feature = torch.cat([h, z], dim=-1)
         flat = feature.reshape(-1, feature.shape[-1])
         reward = self.reward_model(flat)
@@ -329,6 +370,8 @@ def transition_masks(
     done_seq: torch.Tensor | None,
     terminated_seq: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build masks for effective, nonterminal, terminal, and padded transitions."""
+
     batch_size, action_steps = action_seq.shape[:2]
     device = action_seq.device
     if done_seq is None:
@@ -351,6 +394,8 @@ def transition_masks(
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mean over masked entries, returning zero when the mask is empty."""
+
     if values.shape != mask.shape:
         raise ValueError("values and mask must have the same shape")
     denom = mask.to(dtype=values.dtype).sum()

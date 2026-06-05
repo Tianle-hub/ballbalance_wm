@@ -21,6 +21,8 @@ class InitialConditionBounds:
 
 
 def sample_initial_state(rng: np.random.Generator, bounds: InitialConditionBounds) -> np.ndarray:
+    """Sample a bounded six-dimensional simulator initial state."""
+
     return np.array(
         [
             rng.uniform(-bounds.pos, bounds.pos),
@@ -42,6 +44,8 @@ def run_mpc_episode(
     target_xy: tuple[float, float] = (0.0, 0.0),
     render: bool = False,
 ) -> dict[str, np.ndarray | float | bool]:
+    """Run one true-environment closed-loop episode with an MPC controller."""
+
     obs, _ = env.reset(options={"state": initial_state})
     controller.reset(obs)
 
@@ -119,6 +123,8 @@ def episode_metrics(
     final_threshold: float,
     last_window_threshold: float,
 ) -> dict[str, float | bool]:
+    """Compute success, fall, distance, reward, and timing metrics for an episode."""
+
     obs = np.asarray(episode["obs"])
     action = np.asarray(episode["action"])
     distance = np.linalg.norm(obs[:, :2] - np.asarray(target_xy, dtype=np.float32), axis=-1)
@@ -141,6 +147,8 @@ def episode_metrics(
 
 
 def aggregate_metrics(metrics: list[dict[str, float | bool]]) -> dict[str, float]:
+    """Average per-episode metric dictionaries and add success/fall rates."""
+
     if not metrics:
         return {}
     numeric_keys = [key for key, value in metrics[0].items() if isinstance(value, (int, float, bool))]
@@ -154,6 +162,8 @@ def aggregate_metrics(metrics: list[dict[str, float | bool]]) -> dict[str, float
 
 
 def save_episode_npz(episode: dict[str, np.ndarray | float | bool], path: str | Path) -> None:
+    """Save one rollout dictionary as a compressed NPZ file."""
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, **episode)
@@ -166,6 +176,8 @@ def save_mpc_plots(
     title_prefix: str = "RSSM MPC",
     planned_snapshot_indices: tuple[int, ...] = (0, 10, 25, 50),
 ) -> None:
+    """Save trajectory, state/action, and distance plots for an MPC episode."""
+
     import matplotlib.pyplot as plt
 
     from ball_rssm.utils.plotting import add_board_boundary
@@ -224,6 +236,8 @@ def save_mpc_plots(
 
 
 def pd_action(obs: np.ndarray, target_xy: tuple[float, float] = (0.0, 0.0), kp: float = 0.8, kd: float = 0.25) -> np.ndarray:
+    """Compute a hand-written PD baseline action toward an xy target."""
+
     x, y, vx, vy, _, _ = obs
     target = np.asarray(target_xy, dtype=np.float32)
     theta_y_cmd = -kp * (x - target[0]) - kd * vx
@@ -237,6 +251,8 @@ def run_pd_episode(
     max_steps: int,
     target_xy: tuple[float, float] = (0.0, 0.0),
 ) -> dict[str, np.ndarray | float | bool]:
+    """Run one true-environment episode with the PD baseline controller."""
+
     obs, _ = env.reset(options={"state": initial_state})
     observations = [obs.copy()]
     actions: list[np.ndarray] = []

@@ -37,6 +37,8 @@ class MPCDiagnostics:
 
 
 class RSSMMPCController:
+    """Receding-horizon controller that plans with CEM over RSSM prior rollouts."""
+
     def __init__(
         self,
         checkpoint_path: str | Path,
@@ -94,6 +96,8 @@ class RSSMMPCController:
         )
 
     def reset(self, initial_obs: np.ndarray | None = None) -> None:
+        """Reset latent belief, CEM distribution, and optional initial observation."""
+
         self.state = self.model.initial_state(1, self.device)
         self.prev_action = np.zeros(self.action_dim, dtype=np.float32)
         self.planner.reset_distribution()
@@ -104,6 +108,8 @@ class RSSMMPCController:
             self.state = self._posterior_update(initial_obs, self.prev_action)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
+        """Plan from the current observation and return the first MPC action."""
+
         if self.state is None:
             self.reset(initial_obs=obs)
         elif self.needs_update:
@@ -141,6 +147,8 @@ class RSSMMPCController:
         return best_action.reshape(self.action_space.shape)
 
     def _posterior_update(self, obs: np.ndarray, prev_action: np.ndarray) -> RSSMState:
+        """Normalize one observation/action pair and update posterior belief."""
+
         assert self.state is not None
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, -1)
         action_t = torch.as_tensor(prev_action, dtype=torch.float32, device=self.device).reshape(1, -1)
@@ -150,6 +158,8 @@ class RSSMMPCController:
             return self.model.posterior_update(self.state, action_norm, obs_norm)
 
     def _predict_obs_for_candidates(self, candidate_actions_real: torch.Tensor) -> torch.Tensor:
+        """Decode imagined observations for candidate real-unit action sequences."""
+
         pred_obs, _, _ = self._predict_for_candidates(candidate_actions_real)
         return pred_obs
 
@@ -157,6 +167,8 @@ class RSSMMPCController:
         self,
         candidate_actions_real: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Imagine candidate action rollouts and return denormalized predictions."""
+
         assert self.state is not None
         num_candidates = candidate_actions_real.shape[0]
         action_norm = self.normalizer.normalize_action(candidate_actions_real)
@@ -183,6 +195,8 @@ class RSSMMPCController:
         pred_continue: torch.Tensor,
         actions: torch.Tensor,
     ) -> torch.Tensor:
+        """Evaluate the selected planning objective for candidate rollouts."""
+
         if self.planning_objective == "reward":
             # Learned-reward planning uses continuation to discount impossible
             # future rewards after predicted terminal states.
@@ -208,6 +222,8 @@ class RSSMMPCController:
         raise ValueError(f"Unsupported planning_objective={self.planning_objective!r}")
 
     def diagnostics_dict(self) -> dict[str, Any]:
+        """Return diagnostics from the most recent `act` call."""
+
         if self.last_diagnostics is None:
             return {}
         return {

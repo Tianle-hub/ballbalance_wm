@@ -28,6 +28,8 @@ def center_stabilization_cost(
     actions: torch.Tensor,
     weights: CostWeights | None = None,
 ) -> torch.Tensor:
+    """Cost for stabilizing at board center."""
+
     return point_stabilization_cost(pred_obs, actions, target_xy=None, weights=weights)
 
 
@@ -37,6 +39,8 @@ def point_stabilization_cost(
     target_xy: torch.Tensor | tuple[float, float] | None,
     weights: CostWeights | None = None,
 ) -> torch.Tensor:
+    """Quadratic stabilization cost toward a fixed xy target."""
+
     weights = weights or CostWeights()
     target = _target_tensor(target_xy, pred_obs)
     # State costs operate on denormalized observations: [x, y, vx, vy, theta_x, theta_y].
@@ -61,6 +65,8 @@ def timed_viapoint_cost(
     via_step: int,
     weights: CostWeights | None = None,
 ) -> torch.Tensor:
+    """Cost for reaching a target at a specified planning timestep."""
+
     weights = weights or CostWeights()
     via_step = int(max(0, min(via_step, pred_obs.shape[1] - 1)))
     target = _target_tensor(target_xy, pred_obs)
@@ -83,6 +89,8 @@ def target_trajectory_cost(
     target_xy_seq: torch.Tensor,
     weights: CostWeights | None = None,
 ) -> torch.Tensor:
+    """Track a full target xy trajectory over the planning horizon."""
+
     weights = weights or CostWeights()
     target_xy_seq = target_xy_seq.to(pred_obs.device, dtype=pred_obs.dtype)
     pos_err = pred_obs[..., :2] - target_xy_seq.unsqueeze(0)
@@ -117,6 +125,8 @@ def continuation_discounted_return(
     pred_continue: torch.Tensor | None,
     discount: float,
 ) -> torch.Tensor:
+    """Sum rewards with discounting gated by predicted continuation."""
+
     reward = pred_reward.squeeze(-1)
     _, horizon = reward.shape
     if pred_continue is None:
@@ -132,6 +142,8 @@ def continuation_discounted_return(
 
 
 def _target_tensor(target_xy: torch.Tensor | tuple[float, float] | None, pred_obs: torch.Tensor) -> torch.Tensor:
+    """Convert target xy to a broadcastable [1, 1, 2] tensor."""
+
     if target_xy is None:
         target = torch.zeros(2, device=pred_obs.device, dtype=pred_obs.dtype)
     else:
@@ -140,6 +152,8 @@ def _target_tensor(target_xy: torch.Tensor | tuple[float, float] | None, pred_ob
 
 
 def _smoothness_cost(actions: torch.Tensor, weights: CostWeights) -> torch.Tensor:
+    """Penalize action magnitude at the first step and changes afterward."""
+
     # Penalize both the first command magnitude and command-to-command changes.
     first = actions[:, :1]
     diffs = torch.cat([first, actions[:, 1:] - actions[:, :-1]], dim=1)
@@ -147,6 +161,8 @@ def _smoothness_cost(actions: torch.Tensor, weights: CostWeights) -> torch.Tenso
 
 
 def _boundary_cost(pred_obs: torch.Tensor, weights: CostWeights) -> torch.Tensor:
+    """Apply a large penalty to predicted states outside the board."""
+
     half = weights.board_size / 2.0
     outside = (pred_obs[..., 0].abs() > half) | (pred_obs[..., 1].abs() > half)
     return weights.w_boundary * outside.to(pred_obs.dtype)
