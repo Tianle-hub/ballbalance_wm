@@ -69,7 +69,6 @@ def test_continuation_reward_model_shapes_and_finite_loss() -> None:
             stoch_dim=8,
             embed_dim=16,
             hidden_dim=32,
-            reward_prediction_mode="continuation",
         )
     )
     out = model.forward(obs_seq, action_seq)
@@ -83,39 +82,3 @@ def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     assert torch.isfinite(metrics["continuation_loss"])
     assert torch.isfinite(metrics["continuation_prob_nonterminal"])
     assert torch.isfinite(metrics["continuation_prob_terminal"])
-
-
-def test_split_fall_reward_model_shapes_and_finite_loss() -> None:
-    batch_size = 3
-    seq_len = 7
-    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
-    action_seq = torch.randn(batch_size, seq_len, 2)
-    reward_seq = torch.randn(batch_size, seq_len, 1)
-    done_seq = torch.zeros(batch_size, seq_len, 1)
-    terminated_seq = torch.zeros(batch_size, seq_len, 1)
-    done_seq[0, 3:] = 1.0
-    terminated_seq[0, 3] = 1.0
-    reward_seq[0, 3] = -30.0
-
-    model = WorldModel(
-        WorldModelConfig(
-            obs_dim=6,
-            action_dim=2,
-            deter_dim=32,
-            stoch_dim=8,
-            embed_dim=16,
-            hidden_dim=32,
-            reward_prediction_mode="split_fall",
-        )
-    )
-    out = model.forward(obs_seq, action_seq)
-
-    assert out["reward_pred"].shape == (batch_size, seq_len + 1, 1)
-    assert out["reward_cont_pred"].shape == (batch_size, seq_len + 1, 1)
-    assert out["fall_logit"].shape == (batch_size, seq_len + 1, 1)
-
-    loss, metrics = model.loss(obs_seq, action_seq, reward_seq, done_seq, terminated_seq)
-    assert torch.isfinite(loss)
-    assert torch.isfinite(metrics["reward_loss"])
-    assert torch.isfinite(metrics["fall_prediction_loss"])
-    assert torch.isfinite(metrics["reward_loss_fall_terminal"])

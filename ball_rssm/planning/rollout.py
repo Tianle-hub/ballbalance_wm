@@ -51,6 +51,7 @@ def run_mpc_episode(
     costs: list[float] = []
     predicted_obs: list[np.ndarray] = []
     predicted_reward: list[np.ndarray] = []
+    predicted_continue: list[np.ndarray] = []
     computation_times: list[float] = []
     terminated = False
     truncated = False
@@ -58,6 +59,8 @@ def run_mpc_episode(
     import time
 
     for _ in range(max_steps):
+        # Closed-loop MPC: plan from current belief, execute one real action,
+        # then observe the true environment state before replanning.
         start = time.perf_counter()
         action = controller.act(obs)
         computation_times.append(time.perf_counter() - start)
@@ -68,6 +71,8 @@ def run_mpc_episode(
             predicted_obs.append(np.asarray(diagnostics["predicted_obs"], dtype=np.float32))
         if "predicted_reward" in diagnostics:
             predicted_reward.append(np.asarray(diagnostics["predicted_reward"], dtype=np.float32))
+        if "predicted_continue" in diagnostics:
+            predicted_continue.append(np.asarray(diagnostics["predicted_continue"], dtype=np.float32))
 
         obs, reward, terminated, truncated, _ = env.step(action)
         observations.append(obs.copy())
@@ -85,6 +90,11 @@ def run_mpc_episode(
     pred_reward_arr = (
         np.asarray(predicted_reward, dtype=np.float32) if predicted_reward else np.zeros((0, controller.horizon, 1), dtype=np.float32)
     )
+    pred_continue_arr = (
+        np.asarray(predicted_continue, dtype=np.float32) if predicted_continue else np.zeros((0, controller.horizon, 1), dtype=np.float32)
+    )
+    # Distance includes the initial observation, so it is one element longer
+    # than actions/rewards for non-empty episodes.
     distance = np.linalg.norm(obs_arr[:, :2] - np.asarray(target_xy, dtype=np.float32), axis=-1)
 
     return {
@@ -94,6 +104,7 @@ def run_mpc_episode(
         "cost": np.asarray(costs, dtype=np.float32),
         "predicted_obs": pred_arr,
         "predicted_reward": pred_reward_arr,
+        "predicted_continue": pred_continue_arr,
         "distance": distance.astype(np.float32),
         "computation_time": np.asarray(computation_times, dtype=np.float32),
         "terminated": bool(terminated),
@@ -112,6 +123,8 @@ def episode_metrics(
     action = np.asarray(episode["action"])
     distance = np.linalg.norm(obs[:, :2] - np.asarray(target_xy, dtype=np.float32), axis=-1)
     tail = distance[-min(50, distance.shape[0]) :]
+    # A successful stabilization must avoid falling and remain near the target
+    # at the end and over the recent history window.
     fell = bool(episode["terminated"])
     success = (not fell) and float(distance[-1]) < final_threshold and float(tail.mean()) < last_window_threshold
     return {

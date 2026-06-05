@@ -132,19 +132,19 @@ python scripts/train_rssm.py \
   --batch-size 128 \
   --epochs 100 \
   --reward-loss-weight 1.0 \
-  --reward-prediction-mode continuation
+  --continuation-loss-weight 1.0
 ```
 
 !!! Following parameters work well for mpc control
 ```bash
 python scripts/train_rssm.py \
   --dataset data/ball_balance_mpc_v1.npz \
-  --run-dir runs/rssm_ball_v2_long \
+  --run-dir runs/rssm_ball_v3_long_wiz_reward_continual_model \
   --seq-len 200 \
   --batch-size 256 \
   --epochs 100 \
   --reward-loss-weight 1.0 \
-  --reward-prediction-mode continuation
+  --continuation-loss-weight 1.0
 ```
 
 Evaluate posterior reconstruction, one-step prior prediction, and open-loop rollout:
@@ -217,7 +217,7 @@ Center stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --num-episodes 5 \
   --max-steps 300 \
   --horizon 25 \
@@ -228,7 +228,7 @@ Fixed target stabilization:
 
 ```bash
 python scripts/run_rssm_mpc_viapoint.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --target-x 0.15 \
   --target-y -0.10 \
   --planning-objective state_cost
@@ -238,7 +238,7 @@ Center stabilization with learned reward planning:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --num-episodes 5 \
   --max-steps 300 \
   --horizon 25 \
@@ -249,7 +249,7 @@ Evaluate many random initial conditions:
 
 ```bash
 python scripts/eval_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --mode center \
   --num-episodes 50 \
   --planning-objective state_cost
@@ -259,15 +259,15 @@ Compare PD against RSSM MPC:
 
 ```bash
 python scripts/compare_pd_vs_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt
 ```
 
 Visualize a closed-loop MPC rollout:
 
 ```bash
 python scripts/visualize_mpc_rollout.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
-  --out-dir runs/rssm_ball_v2_long/mpc_visualization
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --out-dir runs/rssm_ball_v3_long_wiz_reward_continual_model/mpc_visualization
 ```
 
 Run an online closed-loop visualizer with the gym ball window, sliding-window control input plot,
@@ -275,7 +275,7 @@ sliding-window state plot, automatic episode switching, random initial states, a
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v2_long/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task viapoint \
   --num-episodes 5 \
   --max-steps 150 \
@@ -296,8 +296,8 @@ MPC loop:
 ```text
 real obs_t -> posterior update -> CEM samples future actions
 -> RSSM prior rollout -> decode predicted observations
--> predict rewards from imagined latent states
--> objective on denormalized predictions/rewards -> execute first action only
+-> predict rewards and continuation from imagined latent states
+-> objective on denormalized predictions/rewards with continuation-discounted return -> execute first action only
 -> replan at next real step
 ```
 
@@ -310,3 +310,4 @@ Important details:
 - Candidate actions are normalized before entering RSSM.
 - Predicted observations are denormalized before computing costs.
 - Predicted rewards are denormalized before learned-reward planning.
+- Predicted continuation discounts imagined learned-reward return after likely terminal states.

@@ -64,6 +64,7 @@ class CEMPlanner:
         self.reset_distribution()
 
     def reset_distribution(self) -> None:
+        # Mean/std parameterize the sampling distribution over the whole action horizon.
         self.mean = torch.zeros(self.horizon, self.action_dim, device=self.device)
         self.std = self.init_std.clone().clamp_min(self.min_std)
 
@@ -71,6 +72,8 @@ class CEMPlanner:
         previous_sequence = torch.as_tensor(previous_sequence, device=self.device, dtype=torch.float32)
         if previous_sequence.shape != (self.horizon, self.action_dim):
             raise ValueError(f"expected previous_sequence shape {(self.horizon, self.action_dim)}")
+        # Receding-horizon warm start: after executing action 0, reuse the rest
+        # of the previous best plan as the next initial mean.
         self.mean[:-1] = previous_sequence[1:]
         self.mean[-1] = previous_sequence[-1]
         self.mean = torch.clamp(self.mean, self.action_low, self.action_high)
@@ -82,6 +85,8 @@ class CEMPlanner:
         elite_cost_mean_per_iter: list[float] = []
 
         for _ in range(self.num_iterations):
+            # Sample bounded action sequences around the current distribution,
+            # evaluate them in batch, then refit to the lowest-cost elites.
             noise = torch.randn(
                 self.num_candidates,
                 self.horizon,
@@ -102,6 +107,7 @@ class CEMPlanner:
             elite_mean = elites.mean(dim=0)
             elite_std = elites.std(dim=0, unbiased=False).clamp_min(self.min_std)
 
+            # Momentum damps abrupt distribution jumps between CEM iterations.
             old_mean = self.mean
             old_std = self.std
             self.mean = self.momentum * old_mean + (1.0 - self.momentum) * elite_mean

@@ -58,7 +58,9 @@ class RSSMMPCController:
             raise TypeError("action_space must be gymnasium.spaces.Box")
         self.device = torch.device(device if str(device) != "cuda" or torch.cuda.is_available() else "cpu")
         checkpoint = load_checkpoint(checkpoint_path, self.device)
-        self.model = WorldModel(WorldModelConfig(**checkpoint["config"])).to(self.device)
+        # from_dict ignores obsolete config keys so continuation-mode checkpoints
+        # remain loadable after reward-model cleanup.
+        self.model = WorldModel(WorldModelConfig.from_dict(checkpoint["config"])).to(self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
         self.normalizer = Normalizer.load_state_dict(checkpoint["normalizer"]).to(self.device)
@@ -98,17 +100,20 @@ class RSSMMPCController:
         self.needs_update = False
         self.last_diagnostics = None
         if initial_obs is not None:
+            # Initialize the belief with the first real observation before planning.
             self.state = self._posterior_update(initial_obs, self.prev_action)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
         if self.state is None:
             self.reset(initial_obs=obs)
         elif self.needs_update:
+            # Incorporate the observation produced by the previously executed action.
             self.state = self._posterior_update(obs, self.prev_action)
 
         assert self.state is not None
 
         def cost_fn(candidate_actions_real: torch.Tensor) -> torch.Tensor:
+            # CEM proposes real action units; the model path normalizes them internally.
             pred_obs, pred_reward, pred_continue = self._predict_for_candidates(candidate_actions_real)
             return self._cost(pred_obs, pred_reward, pred_continue, candidate_actions_real)
 
@@ -121,6 +126,7 @@ class RSSMMPCController:
         pred_reward = pred_reward_t[0].detach().cpu().numpy()
         pred_continue = pred_continue_t[0].detach().cpu().numpy()
 
+        # Execute only the first action, then shift the plan for the next MPC step.
         self.planner.shift_mean(best_sequence)
         self.prev_action = best_action.reshape(self.action_dim)
         self.needs_update = True
@@ -156,6 +162,8 @@ class RSSMMPCController:
         action_norm = self.normalizer.normalize_action(candidate_actions_real)
         start_state = repeat_state(self.state, num_candidates)
         with torch.no_grad():
+            # Candidate rollouts use prior imagination only; future observations
+            # are unavailable during planning.
             imagined = self.model.imagine_rollout(start_state, action_norm, deterministic=not self.stochastic)
             prior = imagined["prior"]
             assert isinstance(prior, dict)
@@ -176,6 +184,8 @@ class RSSMMPCController:
         actions: torch.Tensor,
     ) -> torch.Tensor:
         if self.planning_objective == "reward":
+            # Learned-reward planning uses continuation to discount impossible
+            # future rewards after predicted terminal states.
             return learned_reward_cost(pred_reward, pred_obs, actions, pred_continue, self.weights)
 
         if self.cost_mode == "center":

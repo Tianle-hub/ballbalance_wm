@@ -47,12 +47,6 @@ def main() -> None:
     parser.add_argument("--beta-kl", type=float, default=1.0)
     parser.add_argument("--free-nats", type=float, default=1.0)
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
-    parser.add_argument("--reward-prediction-mode", choices=["raw", "clip", "split_fall", "continuation"], default="continuation")
-    parser.add_argument("--reward-clip-min", type=float, default=-1.0)
-    parser.add_argument("--fall-reward-threshold", type=float, default=-0.99)
-    parser.add_argument("--fall-penalty-value", type=float, default=-30.0)
-    parser.add_argument("--fall-loss-weight", type=float, default=1.0)
-    parser.add_argument("--fall-prediction-loss-weight", type=float, default=1.0)
     parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--grad-clip", type=float, default=100.0)
     parser.add_argument("--val-fraction", type=float, default=0.1)
@@ -86,12 +80,6 @@ def main() -> None:
         beta_kl=args.beta_kl,
         free_nats=args.free_nats,
         reward_loss_weight=args.reward_loss_weight,
-        reward_prediction_mode=args.reward_prediction_mode,
-        reward_clip_min=args.reward_clip_min,
-        fall_reward_threshold=args.fall_reward_threshold,
-        fall_penalty_value=args.fall_penalty_value,
-        fall_loss_weight=args.fall_loss_weight,
-        fall_prediction_loss_weight=args.fall_prediction_loss_weight,
         continuation_loss_weight=args.continuation_loss_weight,
     )
     model = WorldModel(config).to(device)

@@ -13,6 +13,7 @@ from ball_rssm.models.networks import build_mlp, softplus_std
 
 @dataclass
 class RSSMState:
+    # h is deterministic memory; z is the sampled stochastic latent and its Gaussian stats.
     h: torch.Tensor
     z: torch.Tensor
     mean: torch.Tensor
@@ -36,6 +37,8 @@ class RSSM(nn.Module):
         self.stoch_dim = stoch_dim
         self.min_std = min_std
 
+        # The prior predicts the next stochastic state from recurrent memory alone.
+        # The posterior corrects that prior with the encoded observation at the same step.
         self.gru = nn.GRUCell(stoch_dim + action_dim, deter_dim)
         self.prior_net = build_mlp(deter_dim, hidden_dim, 2 * stoch_dim)
         self.posterior_net = build_mlp(deter_dim + embed_dim, hidden_dim, 2 * stoch_dim)
@@ -53,6 +56,7 @@ class RSSM(nn.Module):
         action: torch.Tensor,
         deterministic: bool = False,
     ) -> tuple[RSSMState, Independent]:
+        # Imagination step: advance latent dynamics with no observation correction.
         x = torch.cat([prev_state.z, action], dim=-1)
         h = self.gru(x, prev_state.h)
         mean, std = self._stats(self.prior_net(h))
@@ -66,6 +70,8 @@ class RSSM(nn.Module):
         action: torch.Tensor,
         embed: torch.Tensor,
     ) -> tuple[RSSMState, RSSMState, Independent, Independent]:
+        # Observation step: first build the action-conditioned prior, then infer z_t
+        # from the prior memory and current observation embedding.
         prior_state, prior_dist = self.img_step(prev_state, action)
         mean, std = self._stats(self.posterior_net(torch.cat([prior_state.h, embed], dim=-1)))
         posterior_dist = self._dist(mean, std)
@@ -84,6 +90,8 @@ class RSSM(nn.Module):
         prior_dists: list[Independent] = []
         posterior_dists: list[Independent] = []
         for t in range(obs_steps):
+            # obs_seq has T+1 entries while action_seq has T. At t=0 there is
+            # no previous action, so a zero action anchors the initial posterior.
             action = zero_action if t == 0 else action_seq[:, t - 1]
             posterior, prior, prior_dist, posterior_dist = self.obs_step(prev, action, embed_seq[:, t])
             post_states.append(posterior)
@@ -110,6 +118,7 @@ class RSSM(nn.Module):
         states: list[RSSMState] = []
         dists: list[Independent] = []
         for t in range(action_seq.shape[1]):
+            # Planning/evaluation uses only the prior after the context state.
             prev, dist = self.img_step(prev, action_seq[:, t], deterministic=deterministic)
             states.append(prev)
             dists.append(dist)
@@ -125,6 +134,7 @@ class RSSM(nn.Module):
 
 
 def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
+    # CEM evaluates many action candidates from the same current belief state.
     return RSSMState(
         h=state.h.repeat(repeats, 1),
         z=state.z.repeat(repeats, 1),
@@ -134,6 +144,7 @@ def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
 
 
 def stack_states(states: list[RSSMState]) -> dict[str, torch.Tensor]:
+    # Convert a Python list of per-step states into [batch, time, dim] tensors.
     return {
         "h": torch.stack([state.h for state in states], dim=1),
         "z": torch.stack([state.z for state in states], dim=1),

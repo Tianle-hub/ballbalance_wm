@@ -68,9 +68,7 @@ Useful knobs:
 
 ```bash
 --reward-loss-weight 1.0
---reward-prediction-mode continuation  # continuation | raw | clip | split_fall
 --continuation-loss-weight 1.0         # continuation head BCE weight
---fall-loss-weight 1.0                 # weight for terminal transition terms
 --beta-kl 1.0
 --free-nats 1.0
 ```
@@ -85,10 +83,9 @@ total_loss = observation_reconstruction_mse
 ```
 
 The reward loss uses `done` to mask out post-done padding transitions. TensorBoard also logs
-`reward_loss_nonterminal`, `reward_loss_fall_terminal`, and `reward_loss_post_done_padding` so fall
-penalties and artificial padding are visible separately. In `continuation` mode the model also trains a separate
-continuation head for `terminated=False` versus `terminated=True`, so the reward head does not need to encode
-episode termination.
+`reward_loss_nonterminal`, `reward_loss_terminal`, and `reward_loss_post_done_padding` so terminal transitions
+and artificial padding are visible separately. The model always trains a separate continuation head for
+`terminated=False` versus `terminated=True`, so the reward head does not need to encode episode termination.
 
 The checkpoint contains one model state dict with encoder, RSSM dynamics, observation decoder, and reward
 model weights.
@@ -97,7 +94,7 @@ model weights.
 
 ```bash
 python scripts/eval_rssm_prediction.py \
-  --checkpoint runs/rssm_ball_v2_long_wiz_reward_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
   --context-len 10 \
   --horizon 50
@@ -106,9 +103,9 @@ python scripts/eval_rssm_prediction.py \
 This writes:
 
 ```text
-runs/rssm_ball_v2_long_wiz_reward_model/eval_metrics.json
-runs/rssm_ball_v2_long_wiz_reward_model/open_loop_mse_curve.png
-runs/rssm_ball_v2_long_wiz_reward_model/open_loop_reward_mse_curve.png
+runs/rssm_ball_v3_long_wiz_reward_continual_model/eval_metrics.json
+runs/rssm_ball_v3_long_wiz_reward_continual_model/open_loop_mse_curve.png
+runs/rssm_ball_v3_long_wiz_reward_continual_model/open_loop_reward_mse_curve.png
 ```
 
 ## 4. Plan With MPC
@@ -125,7 +122,7 @@ stabilization reward. Learned-reward planning uses the predicted continuation he
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v2_long_wiz_reward_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --num-episodes 5 \
   --max-steps 300 \
   --horizon 25 \
@@ -137,7 +134,7 @@ reward. The true env reward does not include arbitrary via-point targets.
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v2_long_wiz_reward_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task viapoint \
   --num-episodes 5 \
   --max-steps 150 \
@@ -152,7 +149,7 @@ Center reward-planning visualizer:
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v2_long_wiz_reward_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task center \
   --num-episodes 5 \
   --max-steps 150 \

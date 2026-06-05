@@ -58,7 +58,7 @@ def main() -> None:
 
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     checkpoint = load_checkpoint(args.checkpoint, device)
-    model = WorldModel(WorldModelConfig(**checkpoint["config"])).to(device)
+    model = WorldModel(WorldModelConfig.from_dict(checkpoint["config"])).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     normalizer = Normalizer.load_state_dict(checkpoint["normalizer"]).to(device)

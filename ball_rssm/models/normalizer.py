@@ -20,6 +20,8 @@ class Normalizer:
 
     @classmethod
     def from_arrays(cls, obs: np.ndarray, action: np.ndarray, reward: np.ndarray | None = None, eps: float = 1e-6) -> "Normalizer":
+        # Statistics are computed over the selected training split and saved with
+        # the checkpoint so planning uses the same scale as training.
         obs_flat = obs.reshape(-1, obs.shape[-1]).astype(np.float32)
         action_flat = action.reshape(-1, action.shape[-1]).astype(np.float32)
         if reward is None:
@@ -64,6 +66,8 @@ class Normalizer:
         return (reward - self.reward_mean) / self.reward_std
 
     def denormalize_reward(self, reward: torch.Tensor) -> torch.Tensor:
+        # MPC optimizes denormalized rewards so objective weights stay in
+        # environment reward units.
         return reward * self.reward_std + self.reward_mean
 
     def state_dict(self) -> dict[str, object]:
