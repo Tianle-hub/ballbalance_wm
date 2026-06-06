@@ -18,16 +18,16 @@ The known-good v1 collection recipe remains the default starting point:
 
 ```bash
 python scripts/collect_dataset.py \
-  --num-episodes 5000 \
+  --num-episodes 8000 \
   --max-episode-steps 300 \
   --mode mpc_cover \
-  --pos-bound 0.25 \
-  --vel-bound 0.20 \
-  --angle-bound 0.12 \
-  --target-bound 0.15 \
+  --pos-bound 0.45 \
+  --vel-bound 0.30 \
+  --angle-bound 0.15 \
+  --target-bound 0.3 \
   --action-noise-std 0.04 \
   --seed 0 \
-  --out data/ball_balance_mpc_v1_reward_normalized.npz
+  --out data/ball_balance_mpc_v2_reward_normalized.npz
 ```
 
 The dataset stores true environment rewards. With the current environment defaults, rewards are bounded for smooth
@@ -51,8 +51,8 @@ done:   [N, T, 1]
 
 ```bash
 python scripts/train_rssm.py \
-  --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
-  --run-dir runs/rssm_ball_v4_long_wiz_reward_continual_model \
+  --dataset data/ball_balance_mpc_v2_reward_normalized.npz \
+  --run-dir runs/rssm_ball_v5_long_wiz_reward_continual_model \
   --seq-len 200 \
   --batch-size 256 \
   --epochs 30
@@ -97,8 +97,8 @@ reward prediction on the offline dataset:
 
 ```bash
 python scripts/eval_rssm_prediction.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
-  --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --dataset data/ball_balance_mpc_v2_reward_normalized.npz \
   --context-len 10 \
   --horizon 50 \
   --num-batches 20 \
@@ -108,9 +108,9 @@ python scripts/eval_rssm_prediction.py \
 This writes:
 
 ```text
-runs/rssm_ball_v4_long_wiz_reward_continual_model/eval_metrics.json
-runs/rssm_ball_v4_long_wiz_reward_continual_model/open_loop_mse_curve.png
-runs/rssm_ball_v4_long_wiz_reward_continual_model/open_loop_reward_mse_curve.png
+runs/rssm_ball_v5_long_wiz_reward_continual_model/eval_metrics.json
+runs/rssm_ball_v5_long_wiz_reward_continual_model/open_loop_mse_curve.png
+runs/rssm_ball_v5_long_wiz_reward_continual_model/open_loop_reward_mse_curve.png
 ```
 
 To inspect what the reward model has learned over the board, sample transitions from the buffer dataset and average
@@ -119,8 +119,8 @@ the board angles and actions that produced transitions into that part of the boa
 
 ```bash
 python scripts/eval_reward_heatmap.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
-  --dataset data/ball_balance_mpc_v1_reward_normalized.npz \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --dataset data/ball_balance_mpc_v2_reward_normalized.npz \
   --num-episodes 256 \
   --batch-size 32 \
   --bins 50 \
@@ -130,10 +130,10 @@ python scripts/eval_reward_heatmap.py \
 This writes:
 
 ```text
-runs/rssm_ball_v4_long_wiz_reward_continual_model/reward_heatmap/reward_position_heatmaps.png
-runs/rssm_ball_v4_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_data.npz
-runs/rssm_ball_v4_long_wiz_reward_continual_model/reward_heatmap/reward_transition_sample.npz
-runs/rssm_ball_v4_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_metrics.json
+runs/rssm_ball_v5_long_wiz_reward_continual_model/reward_heatmap/reward_position_heatmaps.png
+runs/rssm_ball_v5_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_data.npz
+runs/rssm_ball_v5_long_wiz_reward_continual_model/reward_heatmap/reward_transition_sample.npz
+runs/rssm_ball_v5_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_metrics.json
 ```
 
 To evaluate closed-loop center stabilization in the true environment with the current MPC stack, run the same
@@ -141,7 +141,7 @@ checkpoint through both planners. Plain CEM:
 
 ```bash
 python scripts/eval_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --mode center \
   --planning-objective reward \
   --planner-type cem \
@@ -157,7 +157,7 @@ CEM with gradient refinement:
 
 ```bash
 python scripts/eval_rssm_mpc.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --mode center \
   --planning-objective reward \
   --planner-type cem_gd \
@@ -196,7 +196,7 @@ Plain CEM:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --planner-type cem \
   --num-episodes 5 \
   --max-steps 300 \
@@ -211,7 +211,7 @@ CEM with gradient refinement:
 
 ```bash
 python scripts/run_rssm_mpc_center.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --planner-type cem_gd \
   --num-episodes 5 \
   --max-steps 300 \
@@ -230,7 +230,7 @@ include arbitrary via-point targets:
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task viapoint \
   --num-episodes 5 \
   --max-steps 150 \
@@ -245,7 +245,7 @@ Center reward-planning visualizer:
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task center \
   --num-episodes 5 \
   --max-steps 150 \
@@ -257,32 +257,47 @@ To compare center-stabilization methods from identical random initial states, ru
 
 ```bash
 python scripts/compare_center_baselines.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
-  --methods pd,lqr,analytic_mpc,rssm_cem,rssm_cem_gd \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --methods pd,lqr,mpc_cem,mpc_mppi,mpc_gd,rssm_cem,rssm_cem_gd \
   --num-episodes 20 \
   --max-steps 300 \
   --horizon 25 \
   --num-candidates 1024 \
   --num-elites 100 \
   --num-iterations 4 \
-  --planning-objective reward \
-  --analytic-planner-type cem
+  --planning-objective reward
 ```
 
 This evaluates:
 
 - `pd`: full-state hand-written PD.
 - `lqr`: full-state LQR from the linearized visible dynamics.
-- `analytic_mpc`: full-state MPC using the true simulator dynamics and CEM.
+- `mpc_cem`: full-state true-dynamics MPC using CEM.
+- `mpc_mppi`: full-state true-dynamics MPC using MPPI.
+- `mpc_gd`: full-state true-dynamics direct-shooting gradient MPC, an optimization-based baseline in the same family as iLQR/DDP but using autodiff and projected Adam instead of a Riccati backward pass.
 - `rssm_cem`: learned RSSM MPC with CEM.
 - `rssm_cem_gd`: learned RSSM MPC with CEM plus gradient refinement.
+
+The comparison includes control-response metrics:
+
+- `steady_state_error`: mean distance-to-center over the final `--steady-window` observations.
+- `steady_state_rmse`: RMS distance-to-center over the same final window.
+- `settling_time_sec`: first time after which distance remains within `--settling-threshold`; if an episode never settles, this is the episode duration and `settled=false`.
+- `settled_rate`: fraction of episodes that settled by that definition.
+- `mean_compute_time`, `median_compute_time`, `p95_compute_time`, and `max_compute_time`: wall-clock planner latency per control step.
+- `total_compute_time`: total wall-clock planning time per episode.
+- `control_frequency_hz`: inverse of mean per-step compute time.
+- `compute_real_time_factor`: total compute time divided by simulated episode time; values below `1` are faster than real time.
 
 It writes:
 
 ```text
-runs/rssm_ball_v4_long_wiz_reward_continual_model/center_baseline_comparison/comparison_metrics.json
-runs/rssm_ball_v4_long_wiz_reward_continual_model/center_baseline_comparison/comparison_aggregate.csv
-runs/rssm_ball_v4_long_wiz_reward_continual_model/center_baseline_comparison/initial_states.npz
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/comparison_metrics.json
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/comparison_aggregate.csv
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/initial_states.npz
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/control_metric_summary.png
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/steady_error_vs_settling_time.png
+runs/rssm_ball_v5_long_wiz_reward_continual_model/center_baseline_comparison/computation_time_summary.png
 ```
 
 To stress-test learned MPC generalization, start the ball from heatmap bins that were rare or completely unvisited in
@@ -291,8 +306,8 @@ positions from bins with `count <= --max-count`, and then runs RSSM MPC from tho
 
 ```bash
 python scripts/eval_rssm_mpc_unvisited.py \
-  --checkpoint runs/rssm_ball_v4_long_wiz_reward_continual_model/checkpoints/best.pt \
-  --heatmap-data runs/rssm_ball_v4_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_data.npz \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --heatmap-data runs/rssm_ball_v5_long_wiz_reward_continual_model/reward_heatmap/reward_heatmap_data.npz \
   --planner-type both \
   --planning-objective reward \
   --num-episodes 20 \
@@ -308,10 +323,10 @@ python scripts/eval_rssm_mpc_unvisited.py \
 This writes:
 
 ```text
-runs/rssm_ball_v4_long_wiz_reward_continual_model/unvisited_mpc_eval/unvisited_initial_states.npz
-runs/rssm_ball_v4_long_wiz_reward_continual_model/unvisited_mpc_eval/unvisited_mpc_metrics.json
-runs/rssm_ball_v4_long_wiz_reward_continual_model/unvisited_mpc_eval/cem/
-runs/rssm_ball_v4_long_wiz_reward_continual_model/unvisited_mpc_eval/cem_gd/
+runs/rssm_ball_v5_long_wiz_reward_continual_model/unvisited_mpc_eval/unvisited_initial_states.npz
+runs/rssm_ball_v5_long_wiz_reward_continual_model/unvisited_mpc_eval/unvisited_mpc_metrics.json
+runs/rssm_ball_v5_long_wiz_reward_continual_model/unvisited_mpc_eval/cem/
+runs/rssm_ball_v5_long_wiz_reward_continual_model/unvisited_mpc_eval/cem_gd/
 ```
 
 ## 5. Interpretation

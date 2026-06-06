@@ -133,6 +133,7 @@ def episode_metrics(
     # at the end and over the recent history window.
     fell = bool(episode["terminated"])
     success = (not fell) and float(distance[-1]) < final_threshold and float(tail.mean()) < last_window_threshold
+    compute_time = np.asarray(episode["computation_time"], dtype=np.float32)
     return {
         "success": bool(success),
         "fell": fell,
@@ -142,7 +143,12 @@ def episode_metrics(
         "last50_distance": float(tail.mean()),
         "total_reward": float(episode["total_reward"]),
         "control_magnitude": float(np.linalg.norm(action, axis=-1).mean()) if action.size else 0.0,
-        "mean_compute_time": float(np.asarray(episode["computation_time"]).mean()) if len(episode["computation_time"]) else 0.0,
+        "mean_compute_time": float(compute_time.mean()) if compute_time.size else 0.0,
+        "median_compute_time": float(np.median(compute_time)) if compute_time.size else 0.0,
+        "p95_compute_time": float(np.percentile(compute_time, 95)) if compute_time.size else 0.0,
+        "max_compute_time": float(compute_time.max()) if compute_time.size else 0.0,
+        "total_compute_time": float(compute_time.sum()) if compute_time.size else 0.0,
+        "control_frequency_hz": float(1.0 / compute_time.mean()) if compute_time.size and float(compute_time.mean()) > 0.0 else 0.0,
     }
 
 
@@ -158,6 +164,8 @@ def aggregate_metrics(metrics: list[dict[str, float | bool]]) -> dict[str, float
         out[key] = float(values.mean())
     out["success_rate"] = float(np.mean([bool(m["success"]) for m in metrics]))
     out["fall_rate"] = float(np.mean([bool(m["fell"]) for m in metrics]))
+    if "settled" in metrics[0]:
+        out["settled_rate"] = float(np.mean([bool(m["settled"]) for m in metrics]))
     return out
 
 
