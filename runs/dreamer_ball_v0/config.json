@@ -1,0 +1,74 @@
+{
+  "dataset": "data/ball_balance_coverage_v0.npz",
+  "run_dir": "runs/dreamer_ball_v0",
+  "seq_len": 200,
+  "batch_size": 512,
+  "epochs": 100,
+  "world_lr": 0.0003,
+  "actor_lr": 8e-05,
+  "critic_lr": 8e-05,
+  "deter_dim": 128,
+  "stoch_dim": 16,
+  "embed_dim": 64,
+  "hidden_dim": 128,
+  "actor_hidden_dim": 128,
+  "critic_hidden_dim": 128,
+  "beta_kl": 1.0,
+  "free_nats": 1.0,
+  "reward_loss_weight": 1.0,
+  "continuation_loss_weight": 1.0,
+  "imagination_horizon": 15,
+  "behavior_batch_size": 4096,
+  "discount": 0.99,
+  "lambda_": 0.95,
+  "actor_entropy_scale": 0.001,
+  "target_tau": 0.01,
+  "grad_clip": 100.0,
+  "val_fraction": 0.1,
+  "seed": 0,
+  "device": "cuda",
+  "resume": true,
+  "resume_from": null,
+  "world_model": {
+    "obs_dim": 6,
+    "action_dim": 2,
+    "reward_dim": 1,
+    "deter_dim": 128,
+    "stoch_dim": 16,
+    "embed_dim": 64,
+    "hidden_dim": 128,
+    "min_std": 0.0001,
+    "beta_kl": 1.0,
+    "free_nats": 1.0,
+    "reward_loss_weight": 1.0,
+    "continuation_loss_weight": 1.0
+  },
+  "actor": {
+    "feature_dim": 144,
+    "action_dim": 2,
+    "hidden_dim": 128,
+    "min_std": 0.05,
+    "max_std": 2.0,
+    "action_low": [
+      -4.270340919494629,
+      -4.288650989532471
+    ],
+    "action_high": [
+      4.276461124420166,
+      4.286465644836426
+    ]
+  },
+  "critic": {
+    "feature_dim": 144,
+    "hidden_dim": 128
+  },
+  "dreamer": {
+    "imagination_horizon": 15,
+    "behavior_batch_size": 4096,
+    "discount": 0.99,
+    "lambda_": 0.95,
+    "actor_entropy_scale": 0.001,
+    "grad_clip": 100.0,
+    "target_tau": 0.01
+  }
+}

@@ -23,6 +23,7 @@ from ball_rssm.utils.checkpoint import save_checkpoint
 @dataclass
 class DreamerTrainConfig:
     imagination_horizon: int = 15
+    behavior_batch_size: int | None = 4096
     discount: float = 0.99
     lambda_: float = 0.95
     actor_entropy_scale: float = 1e-3
@@ -32,6 +33,8 @@ class DreamerTrainConfig:
     def __post_init__(self) -> None:
         if self.imagination_horizon < 2:
             raise ValueError("imagination_horizon must be at least 2")
+        if self.behavior_batch_size is not None and self.behavior_batch_size <= 0:
+            raise ValueError("behavior_batch_size must be positive or None")
         if not 0.0 <= self.discount <= 1.0:
             raise ValueError("discount must be in [0, 1]")
         if not 0.0 <= self.lambda_ <= 1.0:
@@ -177,7 +180,8 @@ class Trainer:
         with torch.no_grad():
             posterior = self.world_model.forward(obs, action)["posterior"]
             assert isinstance(posterior, dict)
-            start = flatten_state_sequence(posterior, drop_last=True)
+            full_start = flatten_state_sequence(posterior, drop_last=True)
+            start = sample_state_batch(full_start, self.config.behavior_batch_size)
 
         actor_loss, actor_metrics = self.actor_loss(start)
         self.actor_optimizer.zero_grad(set_to_none=True)
@@ -195,6 +199,8 @@ class Trainer:
         metrics = dict(metrics)
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
+        metrics["behavior_start_count"] = torch.as_tensor(full_start.h.shape[0], device=obs.device)
+        metrics["behavior_sample_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
         metrics["world_grad_norm"] = world_grad.detach()
         metrics["actor_grad_norm"] = actor_grad.detach()
         metrics["critic_grad_norm"] = critic_grad.detach()
@@ -211,12 +217,15 @@ class Trainer:
         world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated)
         posterior = self.world_model.forward(obs, action)["posterior"]
         assert isinstance(posterior, dict)
-        start = flatten_state_sequence(posterior, drop_last=True)
+        full_start = flatten_state_sequence(posterior, drop_last=True)
+        start = sample_state_batch(full_start, self.config.behavior_batch_size)
         actor_loss, actor_metrics = self.actor_loss(start)
         critic_loss, critic_metrics = self.critic_loss(start)
         metrics = dict(metrics)
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
+        metrics["behavior_start_count"] = torch.as_tensor(full_start.h.shape[0], device=obs.device)
+        metrics["behavior_sample_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
         metrics["world_grad_norm"] = torch.zeros((), device=obs.device)
         metrics["actor_grad_norm"] = torch.zeros((), device=obs.device)
         metrics["critic_grad_norm"] = torch.zeros((), device=obs.device)
@@ -402,6 +411,21 @@ def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> 
         z=flatten("z"),
         mean=flatten("mean"),
         std=flatten("std"),
+    )
+
+
+def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
+    """Subsample posterior starts used for actor/value imagination."""
+
+    total = state.h.shape[0]
+    if max_states is None or total <= max_states:
+        return state
+    index = torch.randperm(total, device=state.h.device)[:max_states]
+    return RSSMState(
+        h=state.h[index],
+        z=state.z[index],
+        mean=state.mean[index],
+        std=state.std[index],
     )
 
 

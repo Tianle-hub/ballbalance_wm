@@ -67,6 +67,12 @@ def main() -> None:
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
     parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--imagination-horizon", type=int, default=15)
+    parser.add_argument(
+        "--behavior-batch-size",
+        type=int,
+        default=4096,
+        help="Maximum posterior states used for each actor/value imagination update.",
+    )
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.95)
     parser.add_argument("--actor-entropy-scale", type=float, default=1e-3)
@@ -161,6 +167,7 @@ def main() -> None:
 
     dreamer_config = DreamerTrainConfig(
         imagination_horizon=args.imagination_horizon,
+        behavior_batch_size=args.behavior_batch_size,
         discount=args.discount,
         lambda_=args.lambda_,
         actor_entropy_scale=args.actor_entropy_scale,

@@ -6,7 +6,8 @@ from ball_rssm.buffer import Buffer
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.models.behavior import lambda_return
-from ball_rssm.trainer import DreamerTrainConfig, Trainer
+from ball_rssm.models.rssm import RSSMState
+from ball_rssm.trainer import DreamerTrainConfig, Trainer, sample_state_batch
 
 
 def test_actor_outputs_bounded_normalized_actions() -> None:
@@ -42,6 +43,24 @@ def test_lambda_return_matches_discounted_return_when_lambda_one() -> None:
 
     expected = torch.tensor([[[1.0 + 0.9 + 0.9**2], [1.0 + 0.9], [1.0]]])
     torch.testing.assert_close(returns, expected)
+
+
+def test_sample_state_batch_caps_posterior_starts() -> None:
+    state = RSSMState(
+        h=torch.randn(10, 3),
+        z=torch.randn(10, 2),
+        mean=torch.randn(10, 2),
+        std=torch.rand(10, 2) + 0.1,
+    )
+
+    sampled = sample_state_batch(state, max_states=4)
+    unchanged = sample_state_batch(state, max_states=20)
+
+    assert sampled.h.shape == (4, 3)
+    assert sampled.z.shape == (4, 2)
+    assert sampled.mean.shape == (4, 2)
+    assert sampled.std.shape == (4, 2)
+    assert unchanged is state
 
 
 def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
@@ -81,7 +100,7 @@ def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
         normalizer=normalizer,
         device=torch.device("cpu"),
         run_dir=tmp_path,
-        config=DreamerTrainConfig(imagination_horizon=3, grad_clip=10.0),
+        config=DreamerTrainConfig(imagination_horizon=3, behavior_batch_size=3, grad_clip=10.0),
     )
     obs = normalizer.normalize_obs(batch["obs"])
     action = normalizer.normalize_action(batch["action"])
@@ -89,6 +108,8 @@ def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
 
     metrics = trainer.train_batch(obs, action, reward, batch["done"], batch["terminated"])
 
+    assert int(metrics["behavior_sample_count"].item()) == 3
+    assert int(metrics["behavior_start_count"].item()) > int(metrics["behavior_sample_count"].item())
     for key in ("total_loss", "actor_loss", "critic_loss", "world_grad_norm", "actor_grad_norm", "critic_grad_norm"):
         assert key in metrics
         assert torch.isfinite(metrics[key])

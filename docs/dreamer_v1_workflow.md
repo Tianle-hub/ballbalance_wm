@@ -49,6 +49,7 @@ python scripts/train_dreamer.py \
   --actor-lr 8e-5 \
   --critic-lr 8e-5 \
   --imagination-horizon 15 \
+  --behavior-batch-size 4096 \
   --discount 0.99 \
   --lambda 0.95
 ```
@@ -61,7 +62,11 @@ Useful metrics:
 - `kl_loss` and `raw_kl`: posterior-prior RSSM divergence.
 - `actor_objective`: imagined return objective before sign flip.
 - `critic_loss`: value regression loss on imagined features.
+- `behavior_start_count`: posterior starts available from the full world-model batch.
+- `behavior_sample_count`: posterior starts actually used for actor/value imagination.
 - `val_open_loop/obs_h*`: multi-step prior prediction quality.
+
+For long world-model sequences, keep `--seq-len` large and use `--behavior-batch-size` to cap actor/value starts. This keeps dynamics training on the full batch while making the behavior update memory-bounded.
 
 ## Policy Evaluation
 

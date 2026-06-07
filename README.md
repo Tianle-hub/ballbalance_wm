@@ -39,8 +39,8 @@ python scripts/collect_dataset.py \
   --num-episodes 5000 \
   --max-episode-steps 300 \
   --mode coverage \
-  --pos-bound 0.25 \
-  --vel-bound 0.20 \
+  --pos-bound 0.45 \
+  --vel-bound 0.40 \
   --angle-bound 0.12 \
   --target-bound 0.15 \
   --action-noise-std 0.04 \
@@ -71,10 +71,11 @@ obs[:, t] + action[:, t] -> obs[:, t + 1]
 python scripts/train_dreamer.py \
   --dataset data/ball_balance_coverage_v0.npz \
   --run-dir runs/dreamer_ball_v0 \
-  --seq-len 50 \
-  --batch-size 128 \
+  --seq-len 200 \
+  --batch-size 512 \
   --epochs 100 \
-  --imagination-horizon 15
+  --imagination-horizon 15 \
+  --behavior-batch-size 4096
 ```
 
 Each batch performs:
@@ -82,6 +83,8 @@ Each batch performs:
 1. RSSM world-model update from reconstruction, reward, continuation, and KL losses.
 2. Actor update by backpropagating imagined TD(lambda) returns through frozen RSSM dynamics.
 3. Critic update toward target-critic TD(lambda) returns from imagined rollouts.
+
+`--behavior-batch-size` caps how many posterior RSSM states are used as starts for actor/value imagination. The world model still trains on the full sequence batch; this cap only prevents long `seq-len` values from exploding the behavior update.
 
 Checkpoints are written under `runs/dreamer_ball_v0/checkpoints/` and contain the world model, actor, critic, target critic, normalizer, optimizer states, and configs.
 
