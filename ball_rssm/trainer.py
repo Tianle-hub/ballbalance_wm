@@ -23,6 +23,8 @@ from ball_rssm.utils.checkpoint import save_checkpoint
 @dataclass
 class DreamerTrainConfig:
     imagination_horizon: int = 15
+    # Dreamer behavior learning can start from many posterior states in a long
+    # RSSM batch; cap only actor/value imagination, not world-model training.
     behavior_batch_size: int | None = 4096
     discount: float = 0.99
     lambda_: float = 0.95
@@ -172,17 +174,23 @@ class Trainer:
         terminated: torch.Tensor | None,
     ) -> dict[str, torch.Tensor]:
         self.world_optimizer.zero_grad(set_to_none=True)
+        # First update the RSSM and prediction heads on real replay sequences,
+        # then use the updated model to create starts for Dreamer behavior.
         world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated)
         world_loss.backward()
         world_grad = torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.config.grad_clip)
         self.world_optimizer.step()
 
         with torch.no_grad():
+            # Dreamer starts actor/value imagination from posterior RSSM states.
+            # PlaNet would stop here and use the frozen model in a CEM controller.
             posterior = self.world_model.forward(obs, action)["posterior"]
             assert isinstance(posterior, dict)
             full_start = flatten_state_sequence(posterior, drop_last=True)
             start = sample_state_batch(full_start, self.config.behavior_batch_size)
 
+        # DreamerV1 trains policy and value in the same loop as dynamics; there
+        # is no separate planning module or post-hoc action-sequence optimizer.
         actor_loss, actor_metrics = self.actor_loss(start)
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
@@ -234,6 +242,8 @@ class Trainer:
 
     def actor_loss(self, start: RSSMState) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         with freeze_parameters(self.world_model, self.critic):
+            # Freeze model/value parameters but keep the computation graph
+            # through RSSM transitions so imagined returns train the actor.
             states, _, entropy = self.imagine(start, deterministic=False)
             features = self.world_model.features_from_sequence(states)
             reward = self.world_model.predict_reward_sequence(states)
@@ -263,6 +273,8 @@ class Trainer:
 
     def critic_loss(self, start: RSSMState) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         with torch.no_grad():
+            # The critic learns the same imagined TD(lambda) returns that drive
+            # the actor, using a slowly updated target critic for the bootstrap.
             states, _, _ = self.imagine(start, deterministic=False)
             features = self.world_model.features_from_sequence(states)
             reward = self.world_model.predict_reward_sequence(states)
@@ -417,6 +429,8 @@ def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> 
 def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
     """Subsample posterior starts used for actor/value imagination."""
 
+    # This keeps long RSSM sequences practical for Dreamer behavior updates.
+    # It is intentionally after replay sampling, so dynamics still see all data.
     total = state.h.shape[0]
     if max_states is None or total <= max_states:
         return state

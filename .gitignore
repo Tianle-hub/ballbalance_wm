@@ -30,6 +30,9 @@ dist/
 /artifacts/
 *.npz
 *.npy
+/runs/*/figures
+/runs/*/policy_eval
+/runs/*/tb
 
 # Notebooks and editor state
 .ipynb_checkpoints/

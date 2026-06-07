@@ -71,6 +71,8 @@ class DreamerAgent:
 
         assert self.state is not None
         with torch.no_grad():
+            # Runtime Dreamer control is just belief update plus actor inference.
+            # PlaNet would run CEM here to search over future action sequences.
             features = self.world_model.features_from_state(self.state)
             action_norm = self.actor.sample(features, deterministic=self.deterministic)
             action_real = self.normalizer.denormalize_action(action_norm).reshape(-1)

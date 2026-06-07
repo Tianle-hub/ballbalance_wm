@@ -55,6 +55,8 @@ class WorldModel(nn.Module):
         feature_dim = config.deter_dim + config.stoch_dim
         # Heads consume the RSSM feature [h_t, z_t]. Reward stays scalar; episode
         # termination is modeled separately through continuation probability.
+        # Dreamer actor/value training uses reward and continuation inside
+        # imagined rollouts instead of handing a frozen model to a CEM planner.
         self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
         self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
         self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)

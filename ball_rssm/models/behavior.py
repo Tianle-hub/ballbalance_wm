@@ -59,6 +59,8 @@ class BoundedActionDistribution:
         self.action_high = action_high
 
     def rsample(self) -> torch.Tensor:
+        # Dreamer trains the actor through imagined rollouts, so actions need a
+        # reparameterized sample. PlaNet's CEM actions were optimizer samples.
         raw = self.base_dist.rsample()
         return self._scale(torch.tanh(raw))
 
@@ -100,6 +102,8 @@ class Actor(nn.Module):
         self.register_buffer("action_high", action_high)
 
     def forward(self, features: torch.Tensor) -> BoundedActionDistribution:
+        # DreamerV1 adds this learned policy head on RSSM features; PlaNet used
+        # the world model at control time with an external action optimizer.
         flat = features.reshape(-1, features.shape[-1])
         mean_raw, std_raw = torch.chunk(self.net(flat), 2, dim=-1)
         mean = torch.tanh(mean_raw)
@@ -123,6 +127,8 @@ class Critic(nn.Module):
         self.net = build_mlp(config.feature_dim, config.hidden_dim, 1)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
+        # DreamerV1 learns a value bootstrap for imagined TD(lambda) returns.
+        # PlaNet did not need this critic because it planned finite horizons.
         flat = features.reshape(-1, features.shape[-1])
         value = self.net(flat)
         return value.reshape(*features.shape[:-1], 1)
@@ -138,6 +144,8 @@ def lambda_return(
 ) -> torch.Tensor:
     """Compute Dreamer TD(lambda) returns along time dimension 1."""
 
+    # Actor and critic targets come from imagined rewards plus a learned value
+    # bootstrap, replacing PlaNet's direct CEM objective over candidate actions.
     if reward.shape != value.shape or reward.shape != pcont.shape:
         raise ValueError("reward, value, and pcont must share shape [batch, time, 1]")
     if bootstrap.shape != reward[:, 0].shape:
