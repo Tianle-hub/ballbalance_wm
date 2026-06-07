@@ -59,6 +59,10 @@ class WorldModel(nn.Module):
         self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
         self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)
 
+    @property
+    def feature_dim(self) -> int:
+        return self.config.deter_dim + self.config.stoch_dim
+
     def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
         """Encode observations, run RSSM inference, and decode all prediction heads."""
 
@@ -326,10 +330,25 @@ class WorldModel(nn.Module):
     def decode_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         """Decode concatenated [h, z] features, preserving leading dimensions."""
 
-        feature = torch.cat([h, z], dim=-1)
+        feature = self.features_from_tensors(h, z)
         flat = feature.reshape(-1, feature.shape[-1])
         decoded = self.decoder(flat)
         return decoded.reshape(*feature.shape[:-1], -1)
+
+    def features_from_tensors(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Concatenate deterministic and stochastic RSSM tensors."""
+
+        return torch.cat([h, z], dim=-1)
+
+    def features_from_state(self, state: RSSMState) -> torch.Tensor:
+        """Return Dreamer features `[h, z]` for one RSSM state."""
+
+        return self.features_from_tensors(state.h, state.z)
+
+    def features_from_sequence(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Return Dreamer features for a stacked RSSM state sequence."""
+
+        return self.features_from_tensors(states["h"], states["z"])
 
     def predict_reward_from_features(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         """Predict reward from deterministic and stochastic latent features."""

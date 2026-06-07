@@ -1,4 +1,4 @@
-"""Observation/action normalization for RSSM training."""
+"""Observation/action/reward normalization for Dreamer training."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import torch
 
 @dataclass
 class Normalizer:
-    """Stores affine normalization statistics for model training and planning."""
+    """Stores affine normalization statistics for model training and policy rollout."""
 
     obs_mean: torch.Tensor
     obs_std: torch.Tensor
@@ -25,7 +25,7 @@ class Normalizer:
         """Estimate normalization statistics from episode-major arrays."""
 
         # Statistics are computed over the selected training split and saved with
-        # the checkpoint so planning uses the same scale as training.
+        # the checkpoint so actor rollout uses the same scale as training.
         obs_flat = obs.reshape(-1, obs.shape[-1]).astype(np.float32)
         action_flat = action.reshape(-1, action.shape[-1]).astype(np.float32)
         if reward is None:
@@ -72,8 +72,6 @@ class Normalizer:
         return (reward - self.reward_mean) / self.reward_std
 
     def denormalize_reward(self, reward: torch.Tensor) -> torch.Tensor:
-        # MPC optimizes denormalized rewards so objective weights stay in
-        # environment reward units.
         return reward * self.reward_std + self.reward_mean
 
     def state_dict(self) -> dict[str, object]:

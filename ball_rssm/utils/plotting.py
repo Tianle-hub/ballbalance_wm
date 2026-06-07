@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -12,6 +11,8 @@ OBS_LABELS = ["x", "y", "vx", "vy", "theta_x", "theta_y"]
 
 
 def save_xy_diagnostics(obs: np.ndarray, out_path: str | Path, board_size: float = 1.0, max_episodes: int = 12) -> None:
+    import matplotlib.pyplot as plt
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 6))

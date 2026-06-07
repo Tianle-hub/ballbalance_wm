@@ -10,7 +10,7 @@ import numpy as np
 
 from ball_rssm.envs import BallBalanceEnv
 
-PolicyMode = Literal["random_smooth", "pd", "mixed", "mpc_cover"]
+PolicyMode = Literal["random_smooth", "pd", "mixed", "coverage"]
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ class Buffer:
         target_bound: float = 0.12,
         action_noise_std: float = 0.03,
     ) -> "Buffer":
-        if mode not in ("random_smooth", "pd", "mixed", "mpc_cover"):
+        if mode not in ("random_smooth", "pd", "mixed", "coverage"):
             raise ValueError(f"Unsupported mode: {mode}")
         if target_bound < 0.0:
             raise ValueError("target_bound must be non-negative")
@@ -276,7 +276,7 @@ class Buffer:
 
 def choose_episode_mode(mode: PolicyMode, rng: np.random.Generator) -> str:
     if mode != "mixed":
-        if mode != "mpc_cover":
+        if mode != "coverage":
             return mode
         value = rng.random()
         if value < 0.25:

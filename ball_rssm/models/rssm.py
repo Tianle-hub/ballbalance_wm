@@ -152,7 +152,6 @@ class RSSM(nn.Module):
 def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
     """Tile one RSSM state across a candidate batch."""
 
-    # CEM evaluates many action candidates from the same current belief state.
     return RSSMState(
         h=state.h.repeat(repeats, 1),
         z=state.z.repeat(repeats, 1),

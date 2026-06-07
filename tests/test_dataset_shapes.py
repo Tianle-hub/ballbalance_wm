@@ -50,18 +50,18 @@ def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
     assert sample["truncated"].shape == (6, 1)
 
 
-def test_mpc_cover_collection_can_feed_rssm_training(tmp_path) -> None:
+def test_coverage_collection_can_feed_dreamer_world_model_training(tmp_path) -> None:
     collected = collect_dataset(
         num_episodes=6,
         max_episode_steps=20,
         seed=3,
-        mode="mpc_cover",
+        mode="coverage",
         initial_bounds=InitialStateBounds(pos=0.25, vel=0.20, angle=0.12),
         target_bound=0.15,
         action_noise_std=0.04,
     )
-    path = tmp_path / "mpc_cover.npz"
-    save_dataset(collected, path, mode="mpc_cover")
+    path = tmp_path / "coverage.npz"
+    save_dataset(collected, path, mode="coverage")
 
     dataset = SequenceDataset(path, seq_len=10, split="all")
     assert len(dataset) > 0

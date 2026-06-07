@@ -65,7 +65,7 @@ def main() -> None:
     parser.add_argument("--max-episode-steps", type=int, default=300)
     parser.add_argument("--out", type=str, default="data/ball_balance_dataset.npz")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--mode", choices=["random_smooth", "pd", "mixed", "mpc_cover"], default="mixed")
+    parser.add_argument("--mode", choices=["random_smooth", "pd", "mixed", "coverage"], default="mixed")
     parser.add_argument("--pos-bound", type=float, default=0.20)
     parser.add_argument("--vel-bound", type=float, default=0.05)
     parser.add_argument("--angle-bound", type=float, default=0.0)

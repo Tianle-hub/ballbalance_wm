@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -248,6 +247,8 @@ def save_random_ic_dataset(dataset: dict[str, np.ndarray], out: str | Path, **me
 
 
 def plot_random_ic_errors(metrics: dict[str, object], out_path: str | Path) -> None:
+    import matplotlib.pyplot as plt
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     horizon = np.arange(1, len(metrics["position_l2_curve"]) + 1)
@@ -274,6 +275,8 @@ def plot_random_ic_trajectories(
     out_path: str | Path,
     max_episodes: int = 8,
 ) -> None:
+    import matplotlib.pyplot as plt
+
     obs = dataset["obs"].astype(np.float32)
     action = dataset["action"].astype(np.float32)
     horizon = min(horizon, action.shape[1] - context_len)
