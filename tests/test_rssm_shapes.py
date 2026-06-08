@@ -49,6 +49,41 @@ def test_world_model_shapes_and_finite_loss() -> None:
     assert torch.all((continuation_pred >= 0.0) & (continuation_pred <= 1.0))
 
 
+def test_dreamer_v2_discrete_world_model_shapes_and_balanced_kl() -> None:
+    batch_size = 3
+    seq_len = 6
+    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=32,
+            stoch_dim=4,
+            discrete_classes=8,
+            embed_dim=16,
+            hidden_dim=32,
+            dreamer_version="v2",
+        )
+    )
+    out = model.forward(obs_seq, action_seq)
+
+    assert model.feature_dim == 32 + 4 * 8
+    assert out["recon"].shape == (batch_size, seq_len + 1, 6)
+    assert out["prior"]["z"].shape == (batch_size, seq_len + 1, 4 * 8)
+    assert out["prior"]["logits"].shape == (batch_size, seq_len + 1, 4, 8)
+    assert out["posterior"]["logits"].shape == (batch_size, seq_len + 1, 4, 8)
+
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq)
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["kl_loss"])
+    assert torch.isfinite(metrics["dynamics_kl_loss"])
+    assert torch.isfinite(metrics["representation_kl_loss"])
+    assert torch.isfinite(metrics["posterior_entropy_mean"])
+
+
 def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     batch_size = 3
     seq_len = 7

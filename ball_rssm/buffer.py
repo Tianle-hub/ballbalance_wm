@@ -59,7 +59,10 @@ class Buffer:
         if max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be positive")
 
+        self.capacity = num_episodes
         self.num_episodes = num_episodes
+        self.size = num_episodes
+        self._next_episode = 0
         self.max_episode_steps = max_episode_steps
         self.obs_buffer = np.zeros((num_episodes, max_episode_steps + 1, *obs_shape), dtype=np.float32)
         self.action_buffer = np.zeros((num_episodes, max_episode_steps, *action_shape), dtype=np.float32)
@@ -68,6 +71,24 @@ class Buffer:
         self.truncated_buffer = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
         self.done_buffer = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
         self.initial_bounds = np.zeros(3, dtype=np.float32)
+
+    @classmethod
+    def empty(
+        cls,
+        capacity_episodes: int,
+        max_episode_steps: int,
+        obs_shape: tuple[int, ...] = (6,),
+        action_shape: tuple[int, ...] = (2,),
+    ) -> "Buffer":
+        buffer = cls(
+            num_episodes=capacity_episodes,
+            max_episode_steps=max_episode_steps,
+            obs_shape=obs_shape,
+            action_shape=action_shape,
+        )
+        buffer.size = 0
+        buffer._next_episode = 0
+        return buffer
 
     @classmethod
     def collect_data(
@@ -118,6 +139,8 @@ class Buffer:
         buffer.done_buffer = done
         if initial_bounds is not None:
             buffer.initial_bounds = initial_bounds
+        buffer.size = obs.shape[0]
+        buffer._next_episode = 0
         return buffer
 
     def collect(
@@ -141,10 +164,12 @@ class Buffer:
         rng = np.random.default_rng(seed)
 
         try:
-            for episode in range(self.num_episodes):
+            for episode in range(self.capacity):
                 self._collect_episode(env, episode, seed, rng, mode, initial_bounds, target_bound, action_noise_std)
         finally:
             env.close()
+        self.size = self.capacity
+        self._next_episode = 0
         return self
 
     def save(self, path: str | Path, **metadata: object) -> None:
@@ -153,13 +178,14 @@ class Buffer:
         np.savez_compressed(out_path, **self.to_dataset(), **metadata)
 
     def to_dataset(self) -> dict[str, np.ndarray]:
+        episode_slice = slice(0, self.size)
         return {
-            "obs": self.obs_buffer,
-            "action": self.action_buffer,
-            "reward": self.reward_buffer,
-            "terminated": self.terminated_buffer,
-            "truncated": self.truncated_buffer,
-            "done": self.done_buffer,
+            "obs": self.obs_buffer[episode_slice],
+            "action": self.action_buffer[episode_slice],
+            "reward": self.reward_buffer[episode_slice],
+            "terminated": self.terminated_buffer[episode_slice],
+            "truncated": self.truncated_buffer[episode_slice],
+            "done": self.done_buffer[episode_slice],
             "initial_bounds": self.initial_bounds,
         }
 
@@ -187,8 +213,73 @@ class Buffer:
         episode_indices: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if episode_indices is None:
-            return self.obs_buffer, self.action_buffer, self.reward_buffer
+            return self.obs_buffer[: self.size], self.action_buffer[: self.size], self.reward_buffer[: self.size]
         return self.obs_buffer[episode_indices], self.action_buffer[episode_indices], self.reward_buffer[episode_indices]
+
+    def append_buffer(self, other: "Buffer") -> None:
+        """Append all valid episodes from another buffer into this replay."""
+
+        if other.max_episode_steps != self.max_episode_steps:
+            raise ValueError("source and destination buffers must share max_episode_steps")
+        for episode in range(other.size):
+            self.append_episode(
+                obs=other.obs_buffer[episode],
+                action=other.action_buffer[episode],
+                reward=other.reward_buffer[episode],
+                terminated=other.terminated_buffer[episode],
+                truncated=other.truncated_buffer[episode],
+                done=other.done_buffer[episode],
+            )
+        self.initial_bounds = other.initial_bounds.copy()
+
+    def append_episode(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        done: np.ndarray,
+    ) -> int:
+        """Append one episode, rotating over the oldest slot when capacity is full."""
+
+        self._validate_episode_arrays(obs, action, reward, terminated, truncated, done)
+        if self.size < self.capacity:
+            slot = self.size
+            self.size += 1
+        else:
+            slot = self._next_episode
+        self._next_episode = (slot + 1) % self.capacity
+
+        self.obs_buffer[slot] = obs.astype(np.float32, copy=False)
+        self.action_buffer[slot] = action.astype(np.float32, copy=False)
+        self.reward_buffer[slot] = reward.astype(np.float32, copy=False)
+        self.terminated_buffer[slot] = terminated.astype(bool, copy=False)
+        self.truncated_buffer[slot] = truncated.astype(bool, copy=False)
+        self.done_buffer[slot] = done.astype(bool, copy=False)
+        return slot
+
+    def _validate_episode_arrays(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        done: np.ndarray,
+    ) -> None:
+        expected_obs_shape = self.obs_buffer.shape[1:]
+        expected_action_shape = self.action_buffer.shape[1:]
+        expected_reward_shape = self.reward_buffer.shape[1:]
+        if obs.shape != expected_obs_shape:
+            raise ValueError(f"obs episode must have shape {expected_obs_shape}")
+        if action.shape != expected_action_shape:
+            raise ValueError(f"action episode must have shape {expected_action_shape}")
+        if reward.shape != expected_reward_shape:
+            raise ValueError(f"reward episode must have shape {expected_reward_shape}")
+        for name, array in {"terminated": terminated, "truncated": truncated, "done": done}.items():
+            if array.shape != expected_reward_shape:
+                raise ValueError(f"{name} episode must have shape {expected_reward_shape}")
 
     def _collect_episode(
         self,

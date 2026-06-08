@@ -22,19 +22,42 @@ class WorldModelConfig:
     embed_dim: int = 64
     hidden_dim: int = 128
     min_std: float = 1e-4
+    dreamer_version: str = "v1"
+    discrete_classes: int = 32
     beta_kl: float = 1.0
     free_nats: float = 1.0
+    kl_alpha: float = 0.8
     reward_loss_weight: float = 1.0
     continuation_loss_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        self.dreamer_version = normalize_dreamer_version(self.dreamer_version)
+        if self.discrete_classes < 2:
+            raise ValueError("discrete_classes must be at least 2")
+        if not 0.0 <= self.kl_alpha <= 1.0:
+            raise ValueError("kl_alpha must be in [0, 1]")
 
     @classmethod
     def from_dict(cls, state: dict[str, object]) -> "WorldModelConfig":
         # Checkpoints may contain obsolete config keys from earlier reward modes.
         valid_names = {field.name for field in fields(cls)}
-        return cls(**{key: value for key, value in state.items() if key in valid_names})
+        data = {key: value for key, value in state.items() if key in valid_names}
+        return cls(**data)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    @property
+    def is_v2(self) -> bool:
+        return self.dreamer_version == "v2"
+
+    @property
+    def stoch_feature_dim(self) -> int:
+        return self.stoch_dim * self.discrete_classes if self.is_v2 else self.stoch_dim
+
+    @property
+    def feature_dim(self) -> int:
+        return self.deter_dim + self.stoch_feature_dim
 
 
 class WorldModel(nn.Module):
@@ -51,8 +74,10 @@ class WorldModel(nn.Module):
             stoch_dim=config.stoch_dim,
             hidden_dim=config.hidden_dim,
             min_std=config.min_std,
+            discrete=config.is_v2,
+            discrete_classes=config.discrete_classes,
         )
-        feature_dim = config.deter_dim + config.stoch_dim
+        feature_dim = config.feature_dim
         # Heads consume the RSSM feature [h_t, z_t]. Reward stays scalar; episode
         # termination is modeled separately through continuation probability.
         # Dreamer actor/value training uses reward and continuation inside
@@ -63,7 +88,7 @@ class WorldModel(nn.Module):
 
     @property
     def feature_dim(self) -> int:
-        return self.config.deter_dim + self.config.stoch_dim
+        return self.config.feature_dim
 
     def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
         """Encode observations, run RSSM inference, and decode all prediction heads."""
@@ -167,13 +192,27 @@ class WorldModel(nn.Module):
                 "continuation_prob_terminal": masked_mean(continuation_prob, terminal_mask),
             }
         )
-        posterior_dist = independent_normal(posterior["mean"], posterior["std"])
-        prior_dist = independent_normal(prior["mean"], prior["std"])
+        posterior_dist = self.rssm.get_dist(posterior)
+        prior_dist = self.rssm.get_dist(prior)
         kl = kl_divergence(posterior_dist, prior_dist)
-        # Free nats prevent the KL term from over-regularizing an already small
-        # posterior-prior mismatch.
         raw_kl = masked_mean(kl[:, 1:], effective_mask)
-        kl_loss = masked_mean(torch.clamp(kl[:, 1:], min=self.config.free_nats), effective_mask)
+        if self.config.is_v2:
+            posterior_detached = self.rssm.detach_state(posterior)
+            prior_detached = self.rssm.detach_state(prior)
+            dynamics_kl = kl_divergence(self.rssm.get_dist(posterior_detached), prior_dist)
+            representation_kl = kl_divergence(posterior_dist, self.rssm.get_dist(prior_detached))
+            dynamics_kl_loss = masked_mean(dynamics_kl[:, 1:], effective_mask)
+            representation_kl_loss = masked_mean(representation_kl[:, 1:], effective_mask)
+            kl_loss = (
+                self.config.kl_alpha * dynamics_kl_loss
+                + (1.0 - self.config.kl_alpha) * representation_kl_loss
+            )
+        else:
+            # Dreamer V1 applies free nats to the mean KL so small posterior-prior
+            # mismatches do not dominate the reconstruction objective.
+            dynamics_kl_loss = raw_kl
+            representation_kl_loss = raw_kl
+            kl_loss = torch.maximum(raw_kl, raw_kl.new_tensor(self.config.free_nats))
         total_loss = (
             recon_loss
             + self.config.beta_kl * kl_loss
@@ -188,10 +227,16 @@ class WorldModel(nn.Module):
             "continuation_loss": continuation_loss.detach(),
             "kl_loss": kl_loss.detach(),
             "raw_kl": raw_kl.detach(),
-            "posterior_std_mean": posterior["std"].detach().mean(),
-            "prior_std_mean": prior["std"].detach().mean(),
+            "dynamics_kl_loss": dynamics_kl_loss.detach(),
+            "representation_kl_loss": representation_kl_loss.detach(),
             "recon0_loss": torch.mean((recon[:, :1] - obs_seq[:, :1]) ** 2).detach(),
         }
+        if "std" in posterior and "std" in prior:
+            metrics["posterior_std_mean"] = posterior["std"].detach().mean()
+            metrics["prior_std_mean"] = prior["std"].detach().mean()
+        if "logits" in posterior and "logits" in prior:
+            metrics["posterior_entropy_mean"] = posterior_dist.entropy().detach().mean()
+            metrics["prior_entropy_mean"] = prior_dist.entropy().detach().mean()
         metrics.update({key: value.detach() for key, value in reward_metrics.items()})
         return total_loss, metrics
 
@@ -384,6 +429,15 @@ class WorldModel(nn.Module):
 
 def independent_normal(mean: torch.Tensor, std: torch.Tensor) -> Independent:
     return Independent(Normal(mean, std), 1)
+
+
+def normalize_dreamer_version(version: object) -> str:
+    normalized = str(version).lower().replace("dreamer", "").strip()
+    if normalized in {"1", "v1"}:
+        return "v1"
+    if normalized in {"2", "v2"}:
+        return "v2"
+    raise ValueError("dreamer_version must be one of: v1, v2")
 
 
 def transition_masks(

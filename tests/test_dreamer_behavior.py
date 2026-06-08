@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from ball_rssm.buffer import Buffer
+from ball_rssm.buffer import Buffer, InitialStateBounds
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.models.behavior import lambda_return
@@ -113,3 +113,55 @@ def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
     for key in ("total_loss", "actor_loss", "critic_loss", "world_grad_norm", "actor_grad_norm", "critic_grad_norm"):
         assert key in metrics
         assert torch.isfinite(metrics[key])
+
+
+def test_trainer_collects_actor_episodes_into_replay(tmp_path) -> None:
+    seed_buffer = Buffer.collect_data(num_episodes=2, max_episode_steps=5, seed=1, mode="random_smooth")
+    replay = Buffer.empty(capacity_episodes=4, max_episode_steps=5)
+    replay.append_buffer(seed_buffer)
+    dataset = replay.sequence_dataset(seq_len=3, split="all")
+    train_obs, train_action, train_reward = dataset.selected_arrays()
+    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
+
+    world_config = WorldModelConfig(deter_dim=12, stoch_dim=3, embed_dim=8, hidden_dim=12)
+    world_model = WorldModel(world_config)
+    actor = Actor(
+        ActorConfig(
+            feature_dim=world_model.feature_dim,
+            action_dim=world_config.action_dim,
+            hidden_dim=12,
+            action_low=(-1.0, -1.0),
+            action_high=(1.0, 1.0),
+        )
+    )
+    critic = Critic(CriticConfig(feature_dim=world_model.feature_dim, hidden_dim=12))
+    target_critic = Critic(CriticConfig(feature_dim=world_model.feature_dim, hidden_dim=12))
+    target_critic.load_state_dict(critic.state_dict())
+    trainer = Trainer(
+        world_model=world_model,
+        actor=actor,
+        critic=critic,
+        target_critic=target_critic,
+        buffer=replay,
+        world_optimizer=torch.optim.Adam(world_model.parameters(), lr=1e-3),
+        actor_optimizer=torch.optim.Adam(actor.parameters(), lr=1e-3),
+        critic_optimizer=torch.optim.Adam(critic.parameters(), lr=1e-3),
+        normalizer=normalizer,
+        device=torch.device("cpu"),
+        run_dir=tmp_path,
+        config=DreamerTrainConfig(imagination_horizon=3, behavior_batch_size=3, grad_clip=10.0),
+    )
+
+    metrics = trainer.collect_actor_episodes(
+        num_episodes=2,
+        max_episode_steps=5,
+        seed=4,
+        initial_bounds=InitialStateBounds(pos=0.05, vel=0.02, angle=0.0),
+        exploration_noise=0.1,
+    )
+
+    assert replay.size == 4
+    assert replay.to_dataset()["obs"].shape == (4, 6, 6)
+    assert metrics["collect_episodes"] == 2.0
+    assert metrics["replay_episodes"] == 4.0
+    assert torch.isfinite(torch.tensor(metrics["collect_avg_reward"]))

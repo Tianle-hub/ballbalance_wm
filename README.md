@@ -1,6 +1,6 @@
-# Ball Balance DreamerV1
+# Ball Balance Dreamer V1/V2
 
-This project trains a low-dimensional PyTorch DreamerV1 agent for the analytical ball-board balancing environment.
+This project trains a low-dimensional PyTorch Dreamer agent for the analytical ball-board balancing environment. Use `--dreamer-version v1` for the continuous Gaussian RSSM or `--dreamer-version v2` for the discrete categorical RSSM with KL balancing.
 
 The previous PlaNet-style workflow has been removed. Dynamics learning, actor learning, and value learning now run in the same training loop. Control uses the learned actor directly from the RSSM belief state; there is no CEM, CEM-GD, or separate planning module.
 
@@ -65,12 +65,13 @@ Convention:
 obs[:, t] + action[:, t] -> obs[:, t + 1]
 ```
 
-## Train Dreamer
+## Train Dreamer Offline
 
 ```bash
 python scripts/train_dreamer.py \
   --dataset data/ball_balance_coverage_v0.npz \
   --run-dir runs/dreamer_ball_v0 \
+  --dreamer-version v1 \
   --seq-len 200 \
   --batch-size 512 \
   --epochs 100 \
@@ -90,12 +91,38 @@ python scripts/train_dreamer.py \
   --behavior-batch-size 4096
 ```
 
+## Train Dreamer Online
+
+Online training starts with seed replay collected into the buffer, then alternates model/actor/value updates with actor-driven data collection, following the loop used in `dreamer-torch-v1v2`.
+
+```bash
+python scripts/train_dreamer.py \
+  --train-mode online \
+  --run-dir runs/dreamer_ball_online_v2 \
+  --dreamer-version v2 \
+  --seed-episodes 200 \
+  --buffer-episodes 5000 \
+  --max-episode-steps 300 \
+  --seed-policy-mode coverage \
+  --online-iterations 100 \
+  --update-steps 100 \
+  --collect-episodes 10 \
+  --exploration-noise 0.3 \
+  --exploration-decay 0.99 \
+  --min-exploration-noise 0.05 \
+  --seq-len 100 \
+  --batch-size 256
+```
+
+If `--dataset` is supplied in online mode, that replay is used as the seed buffer. Otherwise the script collects `--seed-episodes` using `--seed-policy-mode`. Online replay is saved to `runs/.../replay/latest.npz` so resumed runs can continue from the latest actor-collected buffer.
 
 Each batch performs:
 
 1. RSSM world-model update from reconstruction, reward, continuation, and KL losses.
 2. Actor update by backpropagating imagined TD(lambda) returns through frozen RSSM dynamics.
 3. Critic update toward target-critic TD(lambda) returns from imagined rollouts.
+
+V1 uses the Gaussian posterior/prior KL with free nats. V2 uses a straight-through categorical latent state and the reference KL balance controlled by `--kl-alpha`.
 
 `--behavior-batch-size` caps how many posterior RSSM states are used as starts for actor/value imagination. The world model still trains on the full sequence batch; this cap only prevents long `seq-len` values from exploding the behavior update.
 

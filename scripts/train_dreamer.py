@@ -12,7 +12,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ball_rssm.buffer import Buffer
+from ball_rssm.buffer import Buffer, InitialStateBounds
 from ball_rssm.envs import BallBalanceEnv
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.trainer import DreamerTrainConfig, Trainer
@@ -48,11 +48,25 @@ def normalized_action_bounds(normalizer: Normalizer) -> tuple[tuple[float, ...],
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset", default=None)
     parser.add_argument("--run-dir", default="runs/dreamer_ball_v0")
+    parser.add_argument("--train-mode", choices=["offline", "online"], default="offline")
+    parser.add_argument("--dreamer-version", choices=["v1", "v2"], default="v1")
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--online-iterations", type=int, default=None)
+    parser.add_argument("--update-steps", type=int, default=100)
+    parser.add_argument("--collect-episodes", type=int, default=1)
+    parser.add_argument("--seed-episodes", type=int, default=20)
+    parser.add_argument("--buffer-episodes", type=int, default=1000)
+    parser.add_argument("--max-episode-steps", type=int, default=300)
+    parser.add_argument("--seed-policy-mode", choices=["random_smooth", "pd", "mixed", "coverage"], default="coverage")
+    parser.add_argument("--pos-bound", type=float, default=0.20)
+    parser.add_argument("--vel-bound", type=float, default=0.05)
+    parser.add_argument("--angle-bound", type=float, default=0.0)
+    parser.add_argument("--target-bound", type=float, default=0.12)
+    parser.add_argument("--action-noise-std", type=float, default=0.03)
     parser.add_argument("--world-lr", type=float, default=3e-4)
     parser.add_argument("--actor-lr", type=float, default=8e-5)
     parser.add_argument("--critic-lr", type=float, default=8e-5)
@@ -60,10 +74,12 @@ def main() -> None:
     parser.add_argument("--stoch-dim", type=int, default=16)
     parser.add_argument("--embed-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--discrete-classes", type=int, default=32)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
     parser.add_argument("--critic-hidden-dim", type=int, default=128)
     parser.add_argument("--beta-kl", type=float, default=1.0)
     parser.add_argument("--free-nats", type=float, default=1.0)
+    parser.add_argument("--kl-alpha", type=float, default=0.8)
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
     parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--imagination-horizon", type=int, default=15)
@@ -76,6 +92,9 @@ def main() -> None:
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.95)
     parser.add_argument("--actor-entropy-scale", type=float, default=1e-3)
+    parser.add_argument("--exploration-noise", type=float, default=0.3)
+    parser.add_argument("--exploration-decay", type=float, default=1.0)
+    parser.add_argument("--min-exploration-noise", type=float, default=0.0)
     parser.add_argument("--target-tau", type=float, default=0.01)
     parser.add_argument("--grad-clip", type=float, default=100.0)
     parser.add_argument("--val-fraction", type=float, default=0.1)
@@ -96,7 +115,41 @@ def main() -> None:
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     run_dir = Path(args.run_dir)
 
-    buffer = Buffer.load(args.dataset)
+    if args.train_mode == "offline" and args.dataset is None:
+        parser.error("--dataset is required for --train-mode offline")
+
+    initial_bounds = InitialStateBounds(pos=args.pos_bound, vel=args.vel_bound, angle=args.angle_bound)
+    if args.train_mode == "online":
+        replay_resume_path = run_dir / "replay" / "latest.npz"
+        if args.dataset is None and args.resume and replay_resume_path.exists():
+            seed_buffer = Buffer.load(replay_resume_path)
+            print(f"resuming online replay from {replay_resume_path} with {seed_buffer.size} episodes")
+        elif args.dataset is not None:
+            seed_buffer = Buffer.load(args.dataset)
+        else:
+            seed_buffer = Buffer.collect_data(
+                num_episodes=args.seed_episodes,
+                max_episode_steps=args.max_episode_steps,
+                seed=args.seed,
+                mode=args.seed_policy_mode,
+                initial_bounds=initial_bounds,
+                target_bound=args.target_bound,
+                action_noise_std=args.action_noise_std,
+            )
+        if seed_buffer.max_episode_steps != args.max_episode_steps:
+            args.max_episode_steps = seed_buffer.max_episode_steps
+        buffer_capacity = max(args.buffer_episodes, seed_buffer.size)
+        buffer = Buffer.empty(
+            capacity_episodes=buffer_capacity,
+            max_episode_steps=seed_buffer.max_episode_steps,
+            obs_shape=tuple(seed_buffer.obs_buffer.shape[2:]),
+            action_shape=tuple(seed_buffer.action_buffer.shape[2:]),
+        )
+        buffer.append_buffer(seed_buffer)
+    else:
+        assert args.dataset is not None
+        buffer = Buffer.load(args.dataset)
+
     train_ds = buffer.sequence_dataset(args.seq_len, split="train", val_fraction=args.val_fraction, seed=args.seed)
     train_obs, train_action, train_reward = train_ds.selected_arrays()
     normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
@@ -110,21 +163,24 @@ def main() -> None:
             stoch_dim=args.stoch_dim,
             embed_dim=args.embed_dim,
             hidden_dim=args.hidden_dim,
+            dreamer_version=args.dreamer_version,
+            discrete_classes=args.discrete_classes,
             beta_kl=args.beta_kl,
             free_nats=args.free_nats,
+            kl_alpha=args.kl_alpha,
             reward_loss_weight=args.reward_loss_weight,
             continuation_loss_weight=args.continuation_loss_weight,
         )
         action_low, action_high = normalized_action_bounds(normalizer)
         actor_config = ActorConfig(
-            feature_dim=world_config.deter_dim + world_config.stoch_dim,
+            feature_dim=world_config.feature_dim,
             action_dim=world_config.action_dim,
             hidden_dim=args.actor_hidden_dim,
             action_low=action_low,
             action_high=action_high,
         )
         critic_config = CriticConfig(
-            feature_dim=world_config.deter_dim + world_config.stoch_dim,
+            feature_dim=world_config.feature_dim,
             hidden_dim=args.critic_hidden_dim,
         )
         start_epoch = 0
@@ -171,6 +227,9 @@ def main() -> None:
         discount=args.discount,
         lambda_=args.lambda_,
         actor_entropy_scale=args.actor_entropy_scale,
+        exploration_noise=args.exploration_noise,
+        exploration_decay=args.exploration_decay,
+        min_exploration_noise=args.min_exploration_noise,
         grad_clip=args.grad_clip,
         target_tau=args.target_tau,
     )
@@ -199,16 +258,32 @@ def main() -> None:
         run_dir=run_dir,
         config=dreamer_config,
     )
-    trainer.train(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        seq_len=args.seq_len,
-        val_fraction=args.val_fraction,
-        seed=args.seed,
-        train_args=vars(args),
-        start_epoch=start_epoch,
-        best_val_loss=best_val_loss,
-    )
+    if args.train_mode == "online":
+        iterations = args.online_iterations if args.online_iterations is not None else args.epochs
+        trainer.train_online(
+            iterations=iterations,
+            update_steps=args.update_steps,
+            collect_episodes=args.collect_episodes,
+            batch_size=args.batch_size,
+            seq_len=args.seq_len,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            train_args=vars(args),
+            initial_bounds=initial_bounds,
+            start_iteration=start_epoch,
+            best_val_loss=best_val_loss,
+        )
+    else:
+        trainer.train(
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            seq_len=args.seq_len,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            train_args=vars(args),
+            start_epoch=start_epoch,
+            best_val_loss=best_val_loss,
+        )
 
 
 if __name__ == "__main__":

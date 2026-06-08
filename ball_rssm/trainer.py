@@ -7,13 +7,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from ball_rssm.buffer import Buffer
+from ball_rssm.buffer import Buffer, InitialStateBounds, sample_initial_state
 from ball_rssm.data.sequence_dataset import batch_to_device
+from ball_rssm.envs import BallBalanceEnv
 from ball_rssm.models import Actor, Critic, Normalizer, WorldModel
 from ball_rssm.models.behavior import discount_weights, lambda_return
 from ball_rssm.models.rssm import RSSMState, stack_states
@@ -29,6 +31,9 @@ class DreamerTrainConfig:
     discount: float = 0.99
     lambda_: float = 0.95
     actor_entropy_scale: float = 1e-3
+    exploration_noise: float = 0.3
+    exploration_decay: float = 1.0
+    min_exploration_noise: float = 0.0
     grad_clip: float = 100.0
     target_tau: float = 0.01
 
@@ -43,6 +48,14 @@ class DreamerTrainConfig:
             raise ValueError("lambda_ must be in [0, 1]")
         if self.actor_entropy_scale < 0.0:
             raise ValueError("actor_entropy_scale must be non-negative")
+        if self.exploration_noise < 0.0:
+            raise ValueError("exploration_noise must be non-negative")
+        if not 0.0 <= self.exploration_decay <= 1.0:
+            raise ValueError("exploration_decay must be in [0, 1]")
+        if self.min_exploration_noise < 0.0:
+            raise ValueError("min_exploration_noise must be non-negative")
+        if self.min_exploration_noise > self.exploration_noise:
+            raise ValueError("min_exploration_noise must be <= exploration_noise")
         if self.grad_clip <= 0.0:
             raise ValueError("grad_clip must be positive")
         if not 0.0 <= self.target_tau <= 1.0:
@@ -128,6 +141,102 @@ class Trainer:
 
         self.close()
 
+    def train_online(
+        self,
+        iterations: int,
+        update_steps: int,
+        collect_episodes: int,
+        batch_size: int,
+        seq_len: int,
+        val_fraction: float,
+        seed: int,
+        train_args: dict[str, object],
+        initial_bounds: InitialStateBounds = InitialStateBounds(),
+        start_iteration: int = 0,
+        best_val_loss: float = float("inf"),
+        save_replay: bool = True,
+    ) -> None:
+        """Run Dreamer-style online replay training and actor data collection."""
+
+        if iterations <= 0:
+            raise ValueError("iterations must be positive")
+        if update_steps <= 0:
+            raise ValueError("update_steps must be positive")
+        if collect_episodes < 0:
+            raise ValueError("collect_episodes must be non-negative")
+        if self.buffer.size <= 0:
+            raise ValueError("online training requires at least one seed replay episode")
+
+        replay_dir = self.run_dir / "replay"
+        if save_replay:
+            replay_dir.mkdir(parents=True, exist_ok=True)
+
+        if start_iteration >= iterations:
+            print(
+                f"checkpoint is already at iteration {start_iteration}; "
+                f"target iterations={iterations}, nothing to train"
+            )
+            self.close()
+            return
+
+        exploration_noise = self.config.exploration_noise
+        if start_iteration > 0:
+            exploration_noise = max(
+                self.config.min_exploration_noise,
+                exploration_noise * (self.config.exploration_decay ** start_iteration),
+            )
+
+        for iteration in range(start_iteration + 1, iterations + 1):
+            self.world_model.train()
+            self.actor.train()
+            self.critic.train()
+            train_metrics = self.run_update_steps(
+                update_steps=update_steps,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                val_fraction=val_fraction,
+                seed=seed + iteration,
+                desc=f"iter {iteration} train",
+            )
+
+            self.world_model.eval()
+            self.actor.eval()
+            self.critic.eval()
+            with torch.no_grad():
+                _, val_loader = self.make_dataloaders(batch_size, seq_len, val_fraction, seed + iteration)
+                val_metrics = self.run_epoch(val_loader, train=False, desc=f"iter {iteration} val")
+                open_loop = self.validation_open_loop_losses(val_loader, horizons=(1, 5, 10, 25, 50))
+
+            collect_metrics = self.collect_actor_episodes(
+                num_episodes=collect_episodes,
+                max_episode_steps=self.buffer.max_episode_steps,
+                seed=seed + 10_000 + iteration * max(collect_episodes, 1),
+                initial_bounds=initial_bounds,
+                exploration_noise=exploration_noise,
+            )
+
+            val_loss = val_metrics["total_loss"]
+            is_best = val_loss < best_val_loss
+            best_val_loss = min(best_val_loss, val_loss)
+            self.save_checkpoint(iteration, best_val_loss, train_args, is_best)
+            if save_replay:
+                self.buffer.save(
+                    replay_dir / "latest.npz",
+                    train_mode="online",
+                    iteration=iteration,
+                    replay_episodes=self.buffer.size,
+                    exploration_noise=exploration_noise,
+                )
+            self.log_online_metrics(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
+            self.print_online_iteration(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
+
+            exploration_noise = max(
+                self.config.min_exploration_noise,
+                exploration_noise * self.config.exploration_decay,
+            )
+
+        self.close()
+
     def close(self) -> None:
         if self.writer is not None:
             self.writer.close()
@@ -163,6 +272,38 @@ class Trainer:
             count += batch_size
             for key, value in metrics.items():
                 totals[key] = totals.get(key, 0.0) + float(value.detach().cpu()) * batch_size
+        return {key: value / max(count, 1) for key, value in totals.items()}
+
+    def run_update_steps(
+        self,
+        update_steps: int,
+        batch_size: int,
+        seq_len: int,
+        val_fraction: float,
+        seed: int,
+        desc: str,
+    ) -> dict[str, float]:
+        train_loader, _ = self.make_dataloaders(batch_size, seq_len, val_fraction, seed)
+        iterator = iter(train_loader)
+        totals: dict[str, float] = {}
+        count = 0
+        for _ in tqdm(range(update_steps), desc=desc, leave=False):
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                iterator = iter(train_loader)
+                batch = next(iterator)
+
+            batch = batch_to_device(batch, self.device)
+            obs = self.normalizer.normalize_obs(batch["obs"])
+            action = self.normalizer.normalize_action(batch["action"])
+            reward = self.normalizer.normalize_reward(batch["reward"]) if "reward" in batch else None
+            metrics = self.train_batch(obs, action, reward, batch.get("done"), batch.get("terminated"))
+
+            current_batch_size = obs.shape[0]
+            count += current_batch_size
+            for key, value in metrics.items():
+                totals[key] = totals.get(key, 0.0) + float(value.detach().cpu()) * current_batch_size
         return {key: value / max(count, 1) for key, value in totals.items()}
 
     def train_batch(
@@ -321,6 +462,155 @@ class Trainer:
             entropies.append(dist.entropy())
         return stack_states(states), torch.stack(actions, dim=1), torch.stack(entropies, dim=1).unsqueeze(-1)
 
+    def collect_actor_episodes(
+        self,
+        num_episodes: int,
+        max_episode_steps: int,
+        seed: int,
+        initial_bounds: InitialStateBounds = InitialStateBounds(),
+        exploration_noise: float = 0.0,
+    ) -> dict[str, float]:
+        """Collect real environment episodes with the current actor and append them to replay."""
+
+        if num_episodes <= 0:
+            return {
+                "collect_avg_reward": float("nan"),
+                "collect_max_reward": float("nan"),
+                "collect_min_reward": float("nan"),
+                "collect_avg_length": float("nan"),
+                "collect_episodes": 0.0,
+                "replay_episodes": float(self.buffer.size),
+                "exploration_noise": float(exploration_noise),
+            }
+        if max_episode_steps != self.buffer.max_episode_steps:
+            raise ValueError("collector max_episode_steps must match the replay buffer")
+
+        env = BallBalanceEnv(config={"max_episode_steps": max_episode_steps})
+        initial_bounds.validate(env)
+        rng = np.random.default_rng(seed)
+        rewards: list[float] = []
+        lengths: list[int] = []
+        was_world_training = self.world_model.training
+        was_actor_training = self.actor.training
+        self.world_model.eval()
+        self.actor.eval()
+        try:
+            for episode in range(num_episodes):
+                episode_data, total_reward, length = self._rollout_actor_episode(
+                    env=env,
+                    seed=seed + episode,
+                    rng=rng,
+                    initial_bounds=initial_bounds,
+                    exploration_noise=exploration_noise,
+                )
+                self.buffer.append_episode(**episode_data)
+                rewards.append(total_reward)
+                lengths.append(length)
+        finally:
+            env.close()
+            self.world_model.train(was_world_training)
+            self.actor.train(was_actor_training)
+
+        reward_array = np.asarray(rewards, dtype=np.float32)
+        length_array = np.asarray(lengths, dtype=np.float32)
+        return {
+            "collect_avg_reward": float(reward_array.mean()),
+            "collect_max_reward": float(reward_array.max()),
+            "collect_min_reward": float(reward_array.min()),
+            "collect_avg_length": float(length_array.mean()),
+            "collect_episodes": float(num_episodes),
+            "replay_episodes": float(self.buffer.size),
+            "exploration_noise": float(exploration_noise),
+        }
+
+    def _rollout_actor_episode(
+        self,
+        env: BallBalanceEnv,
+        seed: int,
+        rng: np.random.Generator,
+        initial_bounds: InitialStateBounds,
+        exploration_noise: float,
+    ) -> tuple[dict[str, np.ndarray], float, int]:
+        obs = np.zeros_like(self.buffer.obs_buffer[0])
+        action = np.zeros_like(self.buffer.action_buffer[0])
+        reward = np.zeros_like(self.buffer.reward_buffer[0])
+        terminated_arr = np.zeros_like(self.buffer.terminated_buffer[0])
+        truncated_arr = np.zeros_like(self.buffer.truncated_buffer[0])
+        done_arr = np.zeros_like(self.buffer.done_buffer[0])
+
+        current_obs, _ = env.reset(seed=seed, options={"state": sample_initial_state(rng, initial_bounds)})
+        obs[0] = current_obs
+        zero_action = np.zeros(env.action_space.shape, dtype=np.float32)
+        state = self.world_model.initial_state(1, self.device)
+        state = self._posterior_update_np(state, current_obs, zero_action)
+
+        total_reward = 0.0
+        length = 0
+        done = False
+        final_obs = current_obs.copy()
+        for step in range(env.config.max_episode_steps):
+            if done:
+                obs[step + 1] = final_obs
+                action[step] = 0.0
+                reward[step, 0] = 0.0
+                terminated_arr[step, 0] = True
+                truncated_arr[step, 0] = False
+                done_arr[step, 0] = True
+                continue
+
+            with torch.no_grad():
+                action_norm = self._sample_actor_action_norm(state, exploration_noise)
+                action_real = self.normalizer.denormalize_action(action_norm).reshape(-1)
+            action_np = action_real.detach().cpu().numpy().astype(np.float32)
+            action_np = np.clip(action_np, env.action_space.low.reshape(-1), env.action_space.high.reshape(-1))
+            next_obs, step_reward, terminated, truncated, _ = env.step(action_np.reshape(env.action_space.shape))
+            done = bool(terminated or truncated)
+            final_obs = next_obs.copy()
+
+            obs[step + 1] = next_obs
+            action[step] = action_np.reshape(action[step].shape)
+            reward[step, 0] = step_reward
+            terminated_arr[step, 0] = terminated
+            truncated_arr[step, 0] = truncated
+            done_arr[step, 0] = done
+            total_reward += float(step_reward)
+            length = step + 1
+
+            if not done:
+                state = self._posterior_update_np(state, next_obs, action_np)
+
+        return (
+            {
+                "obs": obs,
+                "action": action,
+                "reward": reward,
+                "terminated": terminated_arr,
+                "truncated": truncated_arr,
+                "done": done_arr,
+            },
+            total_reward,
+            length,
+        )
+
+    def _posterior_update_np(self, state: RSSMState, obs: np.ndarray, action: np.ndarray) -> RSSMState:
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, -1)
+        action_t = torch.as_tensor(action, dtype=torch.float32, device=self.device).reshape(1, -1)
+        return self.world_model.posterior_update(
+            state,
+            self.normalizer.normalize_action(action_t),
+            self.normalizer.normalize_obs(obs_t),
+        )
+
+    def _sample_actor_action_norm(self, state: RSSMState, exploration_noise: float) -> torch.Tensor:
+        features = self.world_model.features_from_state(state)
+        action_norm = self.actor.sample(features, deterministic=False)
+        if exploration_noise > 0.0:
+            action_norm = action_norm + torch.randn_like(action_norm) * exploration_noise
+            low = self.actor.action_low.to(device=action_norm.device, dtype=action_norm.dtype)
+            high = self.actor.action_high.to(device=action_norm.device, dtype=action_norm.dtype)
+            action_norm = torch.max(torch.min(action_norm, high), low)
+        return action_norm
+
     def validation_open_loop_losses(self, loader: DataLoader, horizons: tuple[int, ...]) -> dict[str, float]:
         batch = next(iter(loader), None)
         if batch is None:
@@ -371,6 +661,7 @@ class Trainer:
             "train_args": train_args,
             "epoch": epoch,
             "best_val_loss": best_val_loss,
+            "replay_episodes": self.buffer.size,
         }
         save_checkpoint(state, self.ckpt_dir / "last.pt")
         save_checkpoint(state, self.ckpt_dir / "latest.pt")
@@ -392,6 +683,21 @@ class Trainer:
         for key, value in log_metrics.items():
             self.writer.add_scalar(key, value, epoch)
 
+    def log_online_metrics(
+        self,
+        iteration: int,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+        open_loop: dict[str, float],
+        collect_metrics: dict[str, float],
+    ) -> None:
+        self.log_metrics(iteration, train_metrics, val_metrics, open_loop)
+        if self.writer is None:
+            return
+        for key, value in collect_metrics.items():
+            if np.isfinite(value):
+                self.writer.add_scalar(f"collect/{key}", value, iteration)
+
     @staticmethod
     def print_epoch(
         epoch: int,
@@ -408,6 +714,25 @@ class Trainer:
             f"{open_loop_str}"
         )
 
+    @staticmethod
+    def print_online_iteration(
+        iteration: int,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+        open_loop: dict[str, float],
+        collect_metrics: dict[str, float],
+    ) -> None:
+        open_loop_str = " ".join(f"{key}={value:.5f}" for key, value in open_loop.items())
+        print(
+            f"iter={iteration:03d} train={train_metrics['total_loss']:.5f} "
+            f"val={val_metrics['total_loss']:.5f} recon={val_metrics['recon_loss']:.5f} "
+            f"reward={val_metrics['reward_loss']:.5f} kl={val_metrics['kl_loss']:.5f} "
+            f"actor={val_metrics['actor_loss']:.5f} critic={val_metrics['critic_loss']:.5f} "
+            f"collect_reward={collect_metrics['collect_avg_reward']:.3f} "
+            f"replay_episodes={collect_metrics['replay_episodes']:.0f} "
+            f"explore={collect_metrics['exploration_noise']:.3f} {open_loop_str}"
+        )
+
 
 def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> RSSMState:
     """Flatten `[batch, time, dim]` RSSM state tensors into one start-state batch."""
@@ -418,11 +743,18 @@ def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> 
         value = states[name][:, time_slice]
         return value.reshape(-1, value.shape[-1]).detach()
 
+    def flatten_optional(name: str) -> torch.Tensor | None:
+        if name not in states:
+            return None
+        value = states[name][:, time_slice]
+        return value.reshape(-1, *value.shape[2:]).detach()
+
     return RSSMState(
         h=flatten("h"),
         z=flatten("z"),
-        mean=flatten("mean"),
-        std=flatten("std"),
+        mean=flatten_optional("mean"),
+        std=flatten_optional("std"),
+        logits=flatten_optional("logits"),
     )
 
 
@@ -438,8 +770,9 @@ def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
     return RSSMState(
         h=state.h[index],
         z=state.z[index],
-        mean=state.mean[index],
-        std=state.std[index],
+        mean=None if state.mean is None else state.mean[index],
+        std=None if state.std is None else state.std[index],
+        logits=None if state.logits is None else state.logits[index],
     )
 
 
