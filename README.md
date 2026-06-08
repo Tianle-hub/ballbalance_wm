@@ -78,6 +78,19 @@ python scripts/train_dreamer.py \
   --behavior-batch-size 4096
 ```
 
+long imagine horizon trial:
+```bash
+python scripts/train_dreamer.py \
+  --dataset data/ball_balance_coverage_v0.npz \
+  --run-dir runs/dreamer_ball_v1 \
+  --seq-len 200 \
+  --batch-size 512 \
+  --epochs 100 \
+  --imagination-horizon 50 \
+  --behavior-batch-size 4096
+```
+
+
 Each batch performs:
 
 1. RSSM world-model update from reconstruction, reward, continuation, and KL losses.

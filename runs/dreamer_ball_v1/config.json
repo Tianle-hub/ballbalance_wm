@@ -1,9 +1,9 @@
 {
   "dataset": "data/ball_balance_coverage_v0.npz",
-  "run_dir": "runs/dreamer_ball_v0",
+  "run_dir": "runs/dreamer_ball_v1",
   "seq_len": 200,
   "batch_size": 512,
-  "epochs": 150,
+  "epochs": 100,
   "world_lr": 0.0003,
   "actor_lr": 8e-05,
   "critic_lr": 8e-05,
@@ -17,7 +17,7 @@
   "free_nats": 1.0,
   "reward_loss_weight": 1.0,
   "continuation_loss_weight": 1.0,
-  "imagination_horizon": 15,
+  "imagination_horizon": 50,
   "behavior_batch_size": 4096,
   "discount": 0.99,
   "lambda_": 0.95,
@@ -63,7 +63,7 @@
     "hidden_dim": 128
   },
   "dreamer": {
-    "imagination_horizon": 15,
+    "imagination_horizon": 50,
     "behavior_batch_size": 4096,
     "discount": 0.99,
     "lambda_": 0.95,
