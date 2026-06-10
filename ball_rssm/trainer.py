@@ -30,7 +30,9 @@ class DreamerTrainConfig:
     behavior_batch_size: int | None = 4096
     discount: float = 0.99
     lambda_: float = 0.95
+    actor_gradient: str = "auto"
     actor_entropy_scale: float = 1e-3
+    exploration_mode: str = "auto"
     exploration_noise: float = 0.3
     exploration_decay: float = 1.0
     min_exploration_noise: float = 0.0
@@ -38,6 +40,8 @@ class DreamerTrainConfig:
     target_tau: float = 0.01
 
     def __post_init__(self) -> None:
+        self.actor_gradient = normalize_actor_gradient(self.actor_gradient)
+        self.exploration_mode = normalize_exploration_mode(self.exploration_mode)
         if self.imagination_horizon < 2:
             raise ValueError("imagination_horizon must be at least 2")
         if self.behavior_batch_size is not None and self.behavior_batch_size <= 0:
@@ -96,6 +100,8 @@ class Trainer:
         self.run_dir = Path(run_dir)
         self.ckpt_dir = self.run_dir / "checkpoints"
         self.config = config
+        self.actor_gradient = self.resolve_actor_gradient()
+        self.exploration_mode = self.resolve_exploration_mode()
         self.writer = make_writer(self.run_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,7 +218,8 @@ class Trainer:
                 max_episode_steps=self.buffer.max_episode_steps,
                 seed=seed + 10_000 + iteration * max(collect_episodes, 1),
                 initial_bounds=initial_bounds,
-                exploration_noise=exploration_noise,
+                exploration_noise=self.effective_exploration_noise(exploration_noise),
+                configured_exploration_noise=exploration_noise,
             )
 
             val_loss = val_metrics["total_loss"]
@@ -225,7 +232,9 @@ class Trainer:
                     train_mode="online",
                     iteration=iteration,
                     replay_episodes=self.buffer.size,
-                    exploration_noise=exploration_noise,
+                    exploration_mode=self.exploration_mode,
+                    exploration_noise=collect_metrics["exploration_noise"],
+                    configured_exploration_noise=exploration_noise,
                 )
             self.log_online_metrics(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
             self.print_online_iteration(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
@@ -383,9 +392,13 @@ class Trainer:
 
     def actor_loss(self, start: RSSMState) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         with freeze_parameters(self.world_model, self.critic):
-            # Freeze model/value parameters but keep the computation graph
-            # through RSSM transitions so imagined returns train the actor.
-            states, _, entropy = self.imagine(start, deterministic=False)
+            # V1 uses Dreamer dynamics backpropagation through imagined model
+            # rollouts. V2 can switch to a score-function policy gradient.
+            states, _, entropy, log_prob = self.imagine(
+                start,
+                deterministic=False,
+                actor_gradient=self.actor_gradient,
+            )
             features = self.world_model.features_from_sequence(states)
             reward = self.world_model.predict_reward_sequence(states)
             continuation = self.world_model.predict_continuation_sequence(states)
@@ -399,13 +412,25 @@ class Trainer:
                 value[:, -1],
             ).transpose(0, 1)
             weights = discount_weights(pcont[:, :-1]).detach()
-            objective = (weights * returns).mean()
             entropy_bonus = entropy[:, :-1].mean()
-            loss = -objective - self.config.actor_entropy_scale * entropy_bonus
+            if self.actor_gradient == "reinforce":
+                advantage = (returns - value[:, :-1]).detach()
+                reinforce_objective = (weights * log_prob[:, :-1] * advantage).mean()
+                objective = (weights * returns.detach()).mean()
+                loss = -reinforce_objective - self.config.actor_entropy_scale * entropy_bonus
+            else:
+                reinforce_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
+                objective = (weights * returns).mean()
+                loss = -objective - self.config.actor_entropy_scale * entropy_bonus
         metrics = {
             "actor_loss": loss.detach(),
             "actor_objective": objective.detach(),
+            "actor_reinforce_objective": reinforce_objective.detach(),
             "actor_entropy": entropy_bonus.detach(),
+            "actor_gradient_reinforce": torch.as_tensor(
+                float(self.actor_gradient == "reinforce"),
+                device=start.h.device,
+            ),
             "imagined_reward_mean": reward.detach().mean(),
             "imagined_continue_mean": continuation.detach().mean(),
         }
@@ -415,7 +440,7 @@ class Trainer:
         with torch.no_grad():
             # The critic learns the same imagined TD(lambda) returns that drive
             # the actor, using a slowly updated target critic for the bootstrap.
-            states, _, _ = self.imagine(start, deterministic=False)
+            states, _, _, _ = self.imagine(start, deterministic=False)
             features = self.world_model.features_from_sequence(states)
             reward = self.world_model.predict_reward_sequence(states)
             continuation = self.world_model.predict_continuation_sequence(states)
@@ -445,20 +470,39 @@ class Trainer:
         self,
         start: RSSMState,
         deterministic: bool,
-    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+        actor_gradient: str | None = None,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
+        actor_gradient = self.actor_gradient if actor_gradient is None else normalize_actor_gradient(actor_gradient)
+        if actor_gradient == "auto":
+            actor_gradient = self.actor_gradient
         prev = start
         states: list[RSSMState] = []
         actions: list[torch.Tensor] = []
         entropies: list[torch.Tensor] = []
+        log_probs: list[torch.Tensor] = []
         for _ in range(self.config.imagination_horizon):
             features = self.world_model.features_from_state(prev)
             dist = self.actor(features)
-            action = dist.mode() if deterministic else dist.rsample()
+            if deterministic:
+                action = dist.mode()
+                log_prob = torch.zeros(action.shape[:-1], device=action.device, dtype=action.dtype)
+            elif actor_gradient == "reinforce":
+                action, log_prob = dist.sample_with_log_prob()
+                action = action.detach()
+            else:
+                action = dist.rsample()
+                log_prob = torch.zeros(action.shape[:-1], device=action.device, dtype=action.dtype)
             prev, _ = self.world_model.rssm.img_step(prev, action, deterministic=False)
             states.append(prev)
             actions.append(action)
             entropies.append(dist.entropy())
-        return stack_states(states), torch.stack(actions, dim=1), torch.stack(entropies, dim=1).unsqueeze(-1)
+            log_probs.append(log_prob)
+        return (
+            stack_states(states),
+            torch.stack(actions, dim=1),
+            torch.stack(entropies, dim=1).unsqueeze(-1),
+            torch.stack(log_probs, dim=1).unsqueeze(-1),
+        )
 
     def collect_actor_episodes(
         self,
@@ -467,9 +511,12 @@ class Trainer:
         seed: int,
         initial_bounds: InitialStateBounds = InitialStateBounds(),
         exploration_noise: float = 0.0,
+        configured_exploration_noise: float | None = None,
     ) -> dict[str, float]:
         """Collect real environment episodes with the current actor and append them to replay."""
 
+        if configured_exploration_noise is None:
+            configured_exploration_noise = exploration_noise
         if num_episodes <= 0:
             return {
                 "collect_avg_reward": float("nan"),
@@ -478,7 +525,9 @@ class Trainer:
                 "collect_avg_length": float("nan"),
                 "collect_episodes": 0.0,
                 "replay_episodes": float(self.buffer.size),
+                "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
                 "exploration_noise": float(exploration_noise),
+                "configured_exploration_noise": float(configured_exploration_noise),
             }
         if max_episode_steps != self.buffer.max_episode_steps:
             raise ValueError("collector max_episode_steps must match the replay buffer")
@@ -518,7 +567,9 @@ class Trainer:
             "collect_avg_length": float(length_array.mean()),
             "collect_episodes": float(num_episodes),
             "replay_episodes": float(self.buffer.size),
+            "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
             "exploration_noise": float(exploration_noise),
+            "configured_exploration_noise": float(configured_exploration_noise),
         }
 
     def _rollout_actor_episode(
@@ -608,6 +659,21 @@ class Trainer:
             high = self.actor.action_high.to(device=action_norm.device, dtype=action_norm.dtype)
             action_norm = torch.max(torch.min(action_norm, high), low)
         return action_norm
+
+    def resolve_actor_gradient(self) -> str:
+        if self.config.actor_gradient == "auto":
+            return "reinforce" if self.world_model.config.is_v2 else "dynamics"
+        return self.config.actor_gradient
+
+    def resolve_exploration_mode(self) -> str:
+        if self.config.exploration_mode == "auto":
+            return "policy_entropy" if self.world_model.config.is_v2 else "noise"
+        return self.config.exploration_mode
+
+    def effective_exploration_noise(self, exploration_noise: float) -> float:
+        if self.exploration_mode == "policy_entropy":
+            return 0.0
+        return exploration_noise
 
     def validation_open_loop_losses(self, loader: DataLoader, horizons: tuple[int, ...]) -> dict[str, float]:
         batch = next(iter(loader), None)
@@ -728,7 +794,9 @@ class Trainer:
             f"actor={val_metrics['actor_loss']:.5f} critic={val_metrics['critic_loss']:.5f} "
             f"collect_reward={collect_metrics['collect_avg_reward']:.3f} "
             f"replay_episodes={collect_metrics['replay_episodes']:.0f} "
-            f"explore={collect_metrics['exploration_noise']:.3f} {open_loop_str}"
+            f"explore={collect_metrics['exploration_noise']:.3f} "
+            f"mode={'policy_entropy' if collect_metrics['exploration_mode_policy_entropy'] else 'noise'} "
+            f"{open_loop_str}"
         )
 
 
@@ -772,6 +840,20 @@ def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
         std=None if state.std is None else state.std[index],
         logits=None if state.logits is None else state.logits[index],
     )
+
+
+def normalize_actor_gradient(mode: object) -> str:
+    normalized = str(mode).lower().strip().replace("-", "_")
+    if normalized in {"auto", "dynamics", "reinforce"}:
+        return normalized
+    raise ValueError("actor_gradient must be one of: auto, dynamics, reinforce")
+
+
+def normalize_exploration_mode(mode: object) -> str:
+    normalized = str(mode).lower().strip().replace("-", "_")
+    if normalized in {"auto", "noise", "policy_entropy"}:
+        return normalized
+    raise ValueError("exploration_mode must be one of: auto, noise, policy_entropy")
 
 
 @contextmanager

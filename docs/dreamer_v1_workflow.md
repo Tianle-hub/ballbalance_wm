@@ -1,6 +1,15 @@
-# DreamerV1 Workflow
+# Dreamer Workflow
 
-This branch uses DreamerV1-style actor-critic training over an RSSM world model.
+This branch can train DreamerV1-style or DreamerV2-style actor-critic agents over
+an RSSM world model.
+
+Use `--dreamer-version v1` for continuous Gaussian latents, free-nats KL, dynamics
+backpropagation actor gradients, and external Gaussian collection noise. Use
+`--dreamer-version v2` for categorical straight-through latents, KL balancing,
+REINFORCE actor gradients, and stochastic policy collection without external
+action noise. The behavior choices are controlled by `--actor-gradient auto` and
+`--exploration-mode auto`; pass `dynamics`, `reinforce`, `noise`, or
+`policy_entropy` explicitly for ablations.
 
 ## Main Loop
 
@@ -42,6 +51,7 @@ The `coverage` mode mixes stabilizing and exploratory actions so the world model
 python scripts/train_dreamer.py \
   --dataset data/ball_balance_coverage_v0.npz \
   --run-dir runs/dreamer_ball_v0 \
+  --dreamer-version v1 \
   --seq-len 50 \
   --batch-size 128 \
   --epochs 100 \

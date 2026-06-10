@@ -100,7 +100,7 @@ python scripts/train_dreamer.py \
   --train-mode online \
   --run-dir runs/dreamer_ball_online_v2_more_data \
   --dreamer-version v2 \
-  --seed-episodes 1000 \
+  --seed-episodes 1000 \ 
   --buffer-episodes 20000 \
   --max-episode-steps 300 \
   --seed-policy-mode coverage \
@@ -115,7 +115,7 @@ python scripts/train_dreamer.py \
   --exploration-noise 0.3 \
   --exploration-decay 0.995 \
   --min-exploration-noise 0.05 \
-  --seq-len 150 \
+  --seq-len 200 \
   --batch-size 256
 ```
 

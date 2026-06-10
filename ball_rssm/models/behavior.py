@@ -64,6 +64,12 @@ class BoundedActionDistribution:
         raw = self.base_dist.rsample()
         return self._scale(torch.tanh(raw))
 
+    def sample_with_log_prob(self) -> tuple[torch.Tensor, torch.Tensor]:
+        raw = self.base_dist.sample()
+        action = self._scale(torch.tanh(raw))
+        log_prob = self.base_dist.log_prob(raw)
+        return action, log_prob
+
     def mode(self) -> torch.Tensor:
         raw_mean = self.base_dist.base_dist.mean
         return self._scale(torch.tanh(raw_mean))

@@ -91,7 +91,19 @@ def main() -> None:
     )
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.95)
+    parser.add_argument(
+        "--actor-gradient",
+        choices=["auto", "dynamics", "reinforce"],
+        default="auto",
+        help="Actor gradient estimator. auto uses dynamics for V1 and reinforce for V2.",
+    )
     parser.add_argument("--actor-entropy-scale", type=float, default=1e-3)
+    parser.add_argument(
+        "--exploration-mode",
+        choices=["auto", "noise", "policy_entropy"],
+        default="auto",
+        help="Data-collection exploration. auto uses noise for V1 and policy entropy for V2.",
+    )
     parser.add_argument("--exploration-noise", type=float, default=0.3)
     parser.add_argument("--exploration-decay", type=float, default=1.0)
     parser.add_argument("--min-exploration-noise", type=float, default=0.0)
@@ -226,7 +238,9 @@ def main() -> None:
         behavior_batch_size=args.behavior_batch_size,
         discount=args.discount,
         lambda_=args.lambda_,
+        actor_gradient=args.actor_gradient,
         actor_entropy_scale=args.actor_entropy_scale,
+        exploration_mode=args.exploration_mode,
         exploration_noise=args.exploration_noise,
         exploration_decay=args.exploration_decay,
         min_exploration_noise=args.min_exploration_noise,
