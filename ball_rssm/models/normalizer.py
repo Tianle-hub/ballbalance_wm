@@ -26,7 +26,13 @@ class Normalizer:
 
         # Statistics are computed over the selected training split and saved with
         # the checkpoint so actor rollout uses the same scale as training.
-        obs_flat = obs.reshape(-1, obs.shape[-1]).astype(np.float32)
+        if obs.ndim >= 5:
+            obs_mean = np.array(127.5, dtype=np.float32)
+            obs_std = np.array(255.0, dtype=np.float32)
+        else:
+            obs_flat = obs.reshape(-1, obs.shape[-1]).astype(np.float32)
+            obs_mean = obs_flat.mean(axis=0)
+            obs_std = obs_flat.std(axis=0) + eps
         action_flat = action.reshape(-1, action.shape[-1]).astype(np.float32)
         if reward is None:
             reward_mean = np.zeros(1, dtype=np.float32)
@@ -36,8 +42,8 @@ class Normalizer:
             reward_mean = reward_flat.mean(axis=0)
             reward_std = reward_flat.std(axis=0) + eps
         return cls(
-            obs_mean=torch.from_numpy(obs_flat.mean(axis=0)),
-            obs_std=torch.from_numpy(obs_flat.std(axis=0) + eps),
+            obs_mean=torch.as_tensor(obs_mean),
+            obs_std=torch.as_tensor(obs_std),
             action_mean=torch.from_numpy(action_flat.mean(axis=0)),
             action_std=torch.from_numpy(action_flat.std(axis=0) + eps),
             reward_mean=torch.from_numpy(reward_mean),

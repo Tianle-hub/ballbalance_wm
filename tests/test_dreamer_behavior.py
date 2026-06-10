@@ -117,7 +117,12 @@ def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
 
 def test_trainer_collects_actor_episodes_into_replay(tmp_path) -> None:
     seed_buffer = Buffer.collect_data(num_episodes=2, max_episode_steps=5, seed=1, mode="random_smooth")
-    replay = Buffer.empty(capacity_episodes=4, max_episode_steps=5)
+    replay = Buffer.empty(
+        capacity_episodes=4,
+        max_episode_steps=5,
+        obs_shape=tuple(seed_buffer.obs_buffer.shape[2:]),
+        action_shape=tuple(seed_buffer.action_buffer.shape[2:]),
+    )
     replay.append_buffer(seed_buffer)
     dataset = replay.sequence_dataset(seq_len=3, split="all")
     train_obs, train_action, train_reward = dataset.selected_arrays()
@@ -161,7 +166,7 @@ def test_trainer_collects_actor_episodes_into_replay(tmp_path) -> None:
     )
 
     assert replay.size == 4
-    assert replay.to_dataset()["obs"].shape == (4, 6, 6)
+    assert replay.to_dataset()["obs"].shape == (4, 6, 3, 64, 64)
     assert metrics["collect_episodes"] == 2.0
     assert metrics["replay_episodes"] == 4.0
     assert torch.isfinite(torch.tensor(metrics["collect_avg_reward"]))

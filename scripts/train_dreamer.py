@@ -67,12 +67,14 @@ def main() -> None:
     parser.add_argument("--angle-bound", type=float, default=0.0)
     parser.add_argument("--target-bound", type=float, default=0.12)
     parser.add_argument("--action-noise-std", type=float, default=0.03)
+    parser.add_argument("--observation-mode", choices=["pixels", "state"], default="pixels")
+    parser.add_argument("--image-size", type=int, default=64)
     parser.add_argument("--world-lr", type=float, default=3e-4)
     parser.add_argument("--actor-lr", type=float, default=8e-5)
     parser.add_argument("--critic-lr", type=float, default=8e-5)
     parser.add_argument("--deter-dim", type=int, default=128)
     parser.add_argument("--stoch-dim", type=int, default=16)
-    parser.add_argument("--embed-dim", type=int, default=64)
+    parser.add_argument("--embed-dim", type=int, default=1024)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--discrete-classes", type=int, default=32)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
@@ -135,6 +137,8 @@ def main() -> None:
                 initial_bounds=initial_bounds,
                 target_bound=args.target_bound,
                 action_noise_std=args.action_noise_std,
+                observation_mode=args.observation_mode,
+                image_size=args.image_size,
             )
         if seed_buffer.max_episode_steps != args.max_episode_steps:
             args.max_episode_steps = seed_buffer.max_episode_steps
@@ -159,6 +163,9 @@ def main() -> None:
 
     if checkpoint is None:
         world_config = WorldModelConfig(
+            obs_shape=tuple(int(x) for x in train_obs.shape[2:]),
+            action_dim=int(train_action.shape[-1]),
+            reward_dim=int(train_reward.shape[-1]) if train_reward is not None else 1,
             deter_dim=args.deter_dim,
             stoch_dim=args.stoch_dim,
             embed_dim=args.embed_dim,

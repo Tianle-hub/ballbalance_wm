@@ -28,6 +28,8 @@ def collect_dataset(
     initial_bounds: InitialStateBounds = InitialStateBounds(),
     target_bound: float = 0.12,
     action_noise_std: float = 0.03,
+    observation_mode: str = "pixels",
+    image_size: int = 64,
 ) -> dict[str, np.ndarray]:
     buffer = Buffer.collect_data(
         num_episodes=num_episodes,
@@ -37,6 +39,8 @@ def collect_dataset(
         initial_bounds=initial_bounds,
         target_bound=target_bound,
         action_noise_std=action_noise_std,
+        observation_mode=observation_mode,
+        image_size=image_size,
     )
     return buffer.to_dataset()
 
@@ -71,6 +75,8 @@ def main() -> None:
     parser.add_argument("--angle-bound", type=float, default=0.0)
     parser.add_argument("--target-bound", type=float, default=0.12)
     parser.add_argument("--action-noise-std", type=float, default=0.03)
+    parser.add_argument("--observation-mode", choices=["pixels", "state"], default="pixels")
+    parser.add_argument("--image-size", type=int, default=64)
     args = parser.parse_args()
 
     initial_bounds = InitialStateBounds(pos=args.pos_bound, vel=args.vel_bound, angle=args.angle_bound)
@@ -82,6 +88,8 @@ def main() -> None:
         initial_bounds=initial_bounds,
         target_bound=args.target_bound,
         action_noise_std=args.action_noise_std,
+        observation_mode=args.observation_mode,
+        image_size=args.image_size,
     )
     buffer.save(
         args.out,
@@ -94,6 +102,8 @@ def main() -> None:
         angle_bound=args.angle_bound,
         target_bound=args.target_bound,
         action_noise_std=args.action_noise_std,
+        observation_mode=args.observation_mode,
+        image_size=args.image_size,
     )
     print(f"saved {args.num_episodes} episodes to {args.out}")
 

@@ -41,10 +41,10 @@ def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
     dataset = loaded.sequence_dataset(seq_len=6, split="all")
     sample = dataset[0]
 
-    assert loaded.obs_buffer.shape == (3, 13, 6)
+    assert loaded.obs_buffer.shape == (3, 13, 3, 64, 64)
     assert loaded.action_buffer.shape == (3, 12, 2)
     assert loaded.reward_buffer.shape == (3, 12, 1)
-    assert sample["obs"].shape == (7, 6)
+    assert sample["obs"].shape == (7, 3, 64, 64)
     assert sample["action"].shape == (6, 2)
     assert sample["terminated"].shape == (6, 1)
     assert sample["truncated"].shape == (6, 1)
@@ -78,7 +78,7 @@ def test_coverage_collection_can_feed_dreamer_world_model_training(tmp_path) -> 
 
     model = WorldModel(
         WorldModelConfig(
-            obs_dim=6,
+            obs_shape=tuple(int(x) for x in train_obs.shape[2:]),
             action_dim=2,
             deter_dim=32,
             stoch_dim=8,

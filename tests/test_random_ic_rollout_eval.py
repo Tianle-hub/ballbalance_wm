@@ -23,7 +23,7 @@ def test_random_ic_dataset_bounds_and_shapes() -> None:
 
 def test_random_ic_imagined_error_metrics_are_finite() -> None:
     dataset = generate_random_ic_dataset(num_episodes=4, horizon=5, context_len=2, seed=6, bounds=RandomICBounds(0.15, 0.08, 0.04))
-    model = WorldModel(WorldModelConfig(deter_dim=16, stoch_dim=4, embed_dim=8, hidden_dim=16))
+    model = WorldModel(WorldModelConfig(obs_shape=(6,), deter_dim=16, stoch_dim=4, embed_dim=8, hidden_dim=16))
     normalizer = Normalizer.from_arrays(dataset["obs"], dataset["action"])
 
     metrics = evaluate_imagined_trajectory_error(

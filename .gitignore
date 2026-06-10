@@ -33,6 +33,7 @@ dist/
 /runs/*/figures
 /runs/*/policy_eval
 /runs/*/tb
+/runs/
 
 # Notebooks and editor state
 .ipynb_checkpoints/

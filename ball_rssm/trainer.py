@@ -483,7 +483,14 @@ class Trainer:
         if max_episode_steps != self.buffer.max_episode_steps:
             raise ValueError("collector max_episode_steps must match the replay buffer")
 
-        env = BallBalanceEnv(config={"max_episode_steps": max_episode_steps})
+        obs_shape = tuple(self.buffer.obs_buffer.shape[2:])
+        env_config: dict[str, object] = {"max_episode_steps": max_episode_steps}
+        if len(obs_shape) == 3:
+            env_config["observation_mode"] = "pixels"
+            env_config["image_size"] = obs_shape[-1]
+        else:
+            env_config["observation_mode"] = "state"
+        env = BallBalanceEnv(config=env_config)
         initial_bounds.validate(env)
         rng = np.random.default_rng(seed)
         rewards: list[float] = []
@@ -591,7 +598,7 @@ class Trainer:
         )
 
     def _posterior_update_np(self, state: RSSMState, obs: np.ndarray, action: np.ndarray) -> RSSMState:
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, -1)
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         action_t = torch.as_tensor(action, dtype=torch.float32, device=self.device).reshape(1, -1)
         return self.world_model.posterior_update(
             state,

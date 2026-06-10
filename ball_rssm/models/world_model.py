@@ -1,4 +1,4 @@
-"""Low-dimensional RSSM world model."""
+"""RSSM world model for pixel or low-dimensional observations."""
 
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ from ball_rssm.models.rssm import RSSM, RSSMState
 @dataclass
 class WorldModelConfig:
     obs_dim: int = 6
+    obs_shape: tuple[int, ...] | None = (3, 64, 64)
     action_dim: int = 2
     reward_dim: int = 1
     deter_dim: int = 128
     stoch_dim: int = 16
-    embed_dim: int = 64
+    embed_dim: int = 1024
     hidden_dim: int = 128
     min_std: float = 1e-4
     dreamer_version: str = "v1"
@@ -32,6 +33,14 @@ class WorldModelConfig:
 
     def __post_init__(self) -> None:
         self.dreamer_version = normalize_dreamer_version(self.dreamer_version)
+        if self.obs_shape is not None:
+            self.obs_shape = tuple(int(x) for x in self.obs_shape)
+            if len(self.obs_shape) not in {1, 3}:
+                raise ValueError("obs_shape must be (obs_dim,) or (channels, height, width)")
+            if len(self.obs_shape) == 1:
+                self.obs_dim = self.obs_shape[0]
+            if any(dim <= 0 for dim in self.obs_shape):
+                raise ValueError("obs_shape dimensions must be positive")
         if self.discrete_classes < 2:
             raise ValueError("discrete_classes must be at least 2")
         if not 0.0 <= self.kl_alpha <= 1.0:
@@ -42,6 +51,10 @@ class WorldModelConfig:
         # Checkpoints may contain obsolete config keys from earlier reward modes.
         valid_names = {field.name for field in fields(cls)}
         data = {key: value for key, value in state.items() if key in valid_names}
+        if data.get("obs_shape") is not None:
+            data["obs_shape"] = tuple(int(x) for x in data["obs_shape"])  # type: ignore[arg-type]
+        elif "obs_dim" in data:
+            data["obs_shape"] = (int(data["obs_dim"]),)
         return cls(**data)
 
     def to_dict(self) -> dict[str, object]:
@@ -59,6 +72,71 @@ class WorldModelConfig:
     def feature_dim(self) -> int:
         return self.deter_dim + self.stoch_feature_dim
 
+    @property
+    def observation_shape(self) -> tuple[int, ...]:
+        return self.obs_shape if self.obs_shape is not None else (self.obs_dim,)
+
+    @property
+    def is_pixel_obs(self) -> bool:
+        return len(self.observation_shape) == 3
+
+
+class ConvEncoder(nn.Module):
+    """Dreamer-style convolutional encoder for 64x64 pixel observations."""
+
+    def __init__(self, obs_shape: tuple[int, int, int], embed_dim: int, depth: int = 32) -> None:
+        super().__init__()
+        channels, height, width = obs_shape
+        if (height, width) != (64, 64):
+            raise ValueError("ConvEncoder currently expects 64x64 observations")
+        self.obs_shape = obs_shape
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, depth, kernel_size=4, stride=2),
+            nn.ELU(),
+            nn.Conv2d(depth, 2 * depth, kernel_size=4, stride=2),
+            nn.ELU(),
+            nn.Conv2d(2 * depth, 4 * depth, kernel_size=4, stride=2),
+            nn.ELU(),
+            nn.Conv2d(4 * depth, 8 * depth, kernel_size=4, stride=2),
+            nn.ELU(),
+        )
+        self.fc = nn.Linear(32 * depth, embed_dim)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        leading_shape = obs.shape[:-3]
+        x = obs.reshape(-1, *self.obs_shape)
+        x = self.conv(x).reshape(x.shape[0], -1)
+        embed = self.fc(x)
+        return embed.reshape(*leading_shape, -1)
+
+
+class ConvDecoder(nn.Module):
+    """Dreamer-style transposed-convolution decoder for 64x64 observations."""
+
+    def __init__(self, feature_dim: int, obs_shape: tuple[int, int, int], depth: int = 32) -> None:
+        super().__init__()
+        channels, height, width = obs_shape
+        if (height, width) != (64, 64):
+            raise ValueError("ConvDecoder currently expects 64x64 observations")
+        self.obs_shape = obs_shape
+        self.dense = nn.Linear(feature_dim, 32 * depth)
+        self.deconv = nn.Sequential(
+            nn.ConvTranspose2d(32 * depth, 4 * depth, kernel_size=5, stride=2),
+            nn.ELU(),
+            nn.ConvTranspose2d(4 * depth, 2 * depth, kernel_size=5, stride=2),
+            nn.ELU(),
+            nn.ConvTranspose2d(2 * depth, depth, kernel_size=6, stride=2),
+            nn.ELU(),
+            nn.ConvTranspose2d(depth, channels, kernel_size=6, stride=2),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        leading_shape = features.shape[:-1]
+        x = features.reshape(-1, features.shape[-1])
+        x = self.dense(x).reshape(x.shape[0], -1, 1, 1)
+        recon = self.deconv(x)
+        return recon.reshape(*leading_shape, *self.obs_shape)
+
 
 class WorldModel(nn.Module):
     """RSSM world model with observation, reward, and continuation heads."""
@@ -66,7 +144,12 @@ class WorldModel(nn.Module):
     def __init__(self, config: WorldModelConfig) -> None:
         super().__init__()
         self.config = config
-        self.encoder = build_mlp(config.obs_dim, config.hidden_dim, config.embed_dim)
+        if config.is_pixel_obs:
+            obs_shape = config.observation_shape
+            assert len(obs_shape) == 3
+            self.encoder = ConvEncoder(obs_shape, config.embed_dim)
+        else:
+            self.encoder = build_mlp(config.obs_dim, config.hidden_dim, config.embed_dim)
         self.rssm = RSSM(
             action_dim=config.action_dim,
             embed_dim=config.embed_dim,
@@ -82,7 +165,12 @@ class WorldModel(nn.Module):
         # termination is modeled separately through continuation probability.
         # Dreamer actor/value training uses reward and continuation inside
         # imagined rollouts instead of handing a frozen model to a CEM planner.
-        self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
+        if config.is_pixel_obs:
+            obs_shape = config.observation_shape
+            assert len(obs_shape) == 3
+            self.decoder = ConvDecoder(feature_dim, obs_shape)
+        else:
+            self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
         self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
         self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)
 
@@ -93,8 +181,8 @@ class WorldModel(nn.Module):
     def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
         """Encode observations, run RSSM inference, and decode all prediction heads."""
 
-        batch_size, obs_steps, obs_dim = obs_seq.shape
-        embed = self.encoder(obs_seq.reshape(batch_size * obs_steps, obs_dim)).reshape(batch_size, obs_steps, -1)
+        batch_size, obs_steps = obs_seq.shape[:2]
+        embed = self.encode_obs(obs_seq)
         rssm_out = self.rssm.observe(embed, action_seq)
 
         posterior = rssm_out["posterior"]
@@ -153,7 +241,7 @@ class WorldModel(nn.Module):
             terminated_seq=terminated_seq,
         )
 
-        recon_err = torch.mean((recon[:, 1:] - obs_seq[:, 1:]) ** 2, dim=-1)
+        recon_err = reduce_observation_error((recon[:, 1:] - obs_seq[:, 1:]) ** 2)
         recon_loss = masked_mean(recon_err, effective_mask)
         reward_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
         continuation_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
@@ -328,7 +416,7 @@ class WorldModel(nn.Module):
         return self.predict_continuation_sequence(prior)
 
     def encode_obs(self, obs_norm: torch.Tensor) -> torch.Tensor:
-        """Embed normalized low-dimensional observations."""
+        """Embed normalized observations."""
 
         return self.encoder(obs_norm)
 
@@ -380,6 +468,8 @@ class WorldModel(nn.Module):
         feature = self.features_from_tensors(h, z)
         flat = feature.reshape(-1, feature.shape[-1])
         decoded = self.decoder(flat)
+        if self.config.is_pixel_obs:
+            return decoded.reshape(*feature.shape[:-1], *self.config.observation_shape)
         return decoded.reshape(*feature.shape[:-1], -1)
 
     def features_from_tensors(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
@@ -438,6 +528,15 @@ def normalize_dreamer_version(version: object) -> str:
     if normalized in {"2", "v2"}:
         return "v2"
     raise ValueError("dreamer_version must be one of: v1, v2")
+
+
+def reduce_observation_error(error: torch.Tensor) -> torch.Tensor:
+    """Reduce per-observation reconstruction error to [batch, time]."""
+
+    if error.ndim < 3:
+        raise ValueError("observation error must have shape [batch, time, ...]")
+    reduce_dims = tuple(range(2, error.ndim))
+    return torch.mean(error, dim=reduce_dims)
 
 
 def transition_masks(

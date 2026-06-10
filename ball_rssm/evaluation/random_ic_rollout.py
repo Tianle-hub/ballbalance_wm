@@ -56,7 +56,7 @@ def generate_random_ic_dataset(
         raise ValueError(f"Unsupported action_mode={action_mode!r}")
 
     total_steps = context_len + horizon
-    env = BallBalanceEnv(config={"max_episode_steps": total_steps})
+    env = BallBalanceEnv(config={"max_episode_steps": total_steps, "observation_mode": "state"})
     bounds.validate(env)
     rng = np.random.default_rng(seed)
 

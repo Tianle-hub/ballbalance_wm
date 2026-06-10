@@ -100,14 +100,35 @@ class Buffer:
         initial_bounds: InitialStateBounds = InitialStateBounds(),
         target_bound: float = 0.12,
         action_noise_std: float = 0.03,
+        observation_mode: str = "pixels",
+        image_size: int = 64,
     ) -> "Buffer":
-        buffer = cls(num_episodes=num_episodes, max_episode_steps=max_episode_steps)
+        env = BallBalanceEnv(
+            config={
+                "max_episode_steps": max_episode_steps,
+                "observation_mode": observation_mode,
+                "image_size": image_size,
+            }
+        )
+        try:
+            obs_shape = tuple(env.observation_space.shape)
+            action_shape = tuple(env.action_space.shape)
+        finally:
+            env.close()
+        buffer = cls(
+            num_episodes=num_episodes,
+            max_episode_steps=max_episode_steps,
+            obs_shape=obs_shape,
+            action_shape=action_shape,
+        )
         return buffer.collect(
             seed=seed,
             mode=mode,
             initial_bounds=initial_bounds,
             target_bound=target_bound,
             action_noise_std=action_noise_std,
+            observation_mode=observation_mode,
+            image_size=image_size,
         )
 
     @classmethod
@@ -150,6 +171,8 @@ class Buffer:
         initial_bounds: InitialStateBounds = InitialStateBounds(),
         target_bound: float = 0.12,
         action_noise_std: float = 0.03,
+        observation_mode: str = "pixels",
+        image_size: int = 64,
     ) -> "Buffer":
         if mode not in ("random_smooth", "pd", "mixed", "coverage"):
             raise ValueError(f"Unsupported mode: {mode}")
@@ -158,7 +181,13 @@ class Buffer:
         if action_noise_std < 0.0:
             raise ValueError("action_noise_std must be non-negative")
 
-        env = BallBalanceEnv(config={"max_episode_steps": self.max_episode_steps})
+        env = BallBalanceEnv(
+            config={
+                "max_episode_steps": self.max_episode_steps,
+                "observation_mode": observation_mode,
+                "image_size": image_size,
+            }
+        )
         initial_bounds.validate(env)
         self.initial_bounds = np.array([initial_bounds.pos, initial_bounds.vel, initial_bounds.angle], dtype=np.float32)
         rng = np.random.default_rng(seed)
@@ -312,8 +341,9 @@ class Buffer:
                 self._pad_after_done(episode, step, final_obs)
                 continue
 
+            state_obs = env.state.astype(np.float32)
             action, hold_action, hold_steps = self._policy_action(
-                env, obs, action, hold_action, hold_steps, episode_mode, target, noise_std, rng
+                env, state_obs, action, hold_action, hold_steps, episode_mode, target, noise_std, rng
             )
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated

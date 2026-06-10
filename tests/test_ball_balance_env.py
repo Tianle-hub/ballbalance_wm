@@ -15,7 +15,7 @@ def test_reset_returns_obs_and_info() -> None:
     env = BallBalanceEnv()
     obs, info = env.reset(seed=0)
     try:
-        assert obs.shape == (6,)
+        assert obs.shape == (3, 64, 64)
         assert obs.dtype == np.float32
         assert isinstance(info, dict)
         assert env.observation_space.contains(obs)
@@ -61,17 +61,29 @@ def test_deterministic_reset_with_same_seed() -> None:
         env.close()
 
 
+def test_state_observation_mode_returns_low_dimensional_state() -> None:
+    env = BallBalanceEnv(config={"observation_mode": "state"})
+    obs, info = env.reset(seed=0)
+    try:
+        assert obs.shape == (6,)
+        assert obs.dtype == np.float32
+        assert env.observation_space.contains(obs)
+        np.testing.assert_allclose(obs, info["state"].astype(np.float32))
+    finally:
+        env.close()
+
+
 def test_zero_action_from_zero_state_stays_near_zero() -> None:
     env = BallBalanceEnv()
     try:
         env.reset(seed=0)
         env.state[:] = 0.0
         for _ in range(50):
-            obs, reward, terminated, truncated, _ = env.step(np.zeros(2, dtype=np.float32))
+            _, reward, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
             assert not terminated
             assert not truncated
             assert reward == 1.0
-            np.testing.assert_allclose(obs, np.zeros(6, dtype=np.float32), atol=1e-6)
+            np.testing.assert_allclose(info["state"], np.zeros(6, dtype=np.float32), atol=1e-6)
     finally:
         env.close()
 
@@ -97,19 +109,19 @@ def test_positive_theta_y_command_increases_x() -> None:
         env.state[:] = 0.0
         action = np.array([0.0, 0.1], dtype=np.float32)
 
-        obs, _, terminated, truncated, info = env.step(action)
+        _, _, terminated, truncated, info = env.step(action)
         assert not terminated
         assert not truncated
         assert info["acceleration"][0] > 0.0
-        assert obs[2] > 0.0
-        assert obs[0] > 0.0
+        assert info["state"][2] > 0.0
+        assert info["state"][0] > 0.0
 
-        previous_x = obs[0]
+        previous_x = info["state"][0]
         for _ in range(10):
-            obs, _, terminated, truncated, _ = env.step(action)
+            _, _, terminated, truncated, info = env.step(action)
             assert not terminated
             assert not truncated
-        assert obs[0] > previous_x
+        assert info["state"][0] > previous_x
     finally:
         env.close()
 
@@ -121,19 +133,19 @@ def test_positive_theta_x_command_decreases_y() -> None:
         env.state[:] = 0.0
         action = np.array([0.1, 0.0], dtype=np.float32)
 
-        obs, _, terminated, truncated, info = env.step(action)
+        _, _, terminated, truncated, info = env.step(action)
         assert not terminated
         assert not truncated
         assert info["acceleration"][1] < 0.0
-        assert obs[3] < 0.0
-        assert obs[1] < 0.0
+        assert info["state"][3] < 0.0
+        assert info["state"][1] < 0.0
 
-        previous_y = obs[1]
+        previous_y = info["state"][1]
         for _ in range(10):
-            obs, _, terminated, truncated, _ = env.step(action)
+            _, _, terminated, truncated, info = env.step(action)
             assert not terminated
             assert not truncated
-        assert obs[1] < previous_y
+        assert info["state"][1] < previous_y
     finally:
         env.close()
 
@@ -156,7 +168,7 @@ def test_large_initial_position_eventually_falls_or_truncates() -> None:
 
 def test_dataset_collector_shapes() -> None:
     dataset = collect_dataset(num_episodes=3, max_episode_steps=12, seed=7, mode="mixed")
-    assert dataset["obs"].shape == (3, 13, 6)
+    assert dataset["obs"].shape == (3, 13, 3, 64, 64)
     assert dataset["action"].shape == (3, 12, 2)
     assert dataset["reward"].shape == (3, 12, 1)
     assert dataset["terminated"].shape == (3, 12, 1)

@@ -18,6 +18,14 @@ pip install -e ".[dev]"
 
 Observation:
 
+By default, `BallBalanceEnv` returns rendered pixel observations:
+
+```text
+[3, 64, 64]
+```
+
+For low-dimensional experiments, construct the environment with `config={"observation_mode": "state"}`. The state observation and `info["state"]` are:
+
 ```text
 [x, y, vx, vy, theta_x, theta_y]
 ```
@@ -51,7 +59,7 @@ python scripts/collect_dataset.py \
 Saved arrays:
 
 ```text
-obs:        [num_episodes, max_episode_steps + 1, 6]
+obs:        [num_episodes, max_episode_steps + 1, 3, 64, 64]
 action:     [num_episodes, max_episode_steps, 2]
 reward:     [num_episodes, max_episode_steps, 1]
 terminated: [num_episodes, max_episode_steps, 1]

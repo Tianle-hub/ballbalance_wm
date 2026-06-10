@@ -49,10 +49,11 @@ def run_policy_episode(
     max_steps: int,
     render: bool = False,
 ) -> dict[str, Any]:
-    obs, _ = env.reset(options={"state": initial_state.astype(np.float64)})
+    obs, info = env.reset(options={"state": initial_state.astype(np.float64)})
     agent.reset(initial_obs=obs)
 
     observations = [obs.copy()]
+    states = [info["state"].astype(np.float32, copy=True)]
     actions: list[np.ndarray] = []
     rewards: list[float] = []
     terminated_flags: list[bool] = []
@@ -61,13 +62,14 @@ def run_policy_episode(
 
     for _ in range(max_steps):
         action = agent.act(observations[-1])
-        next_obs, reward, terminated, truncated, _ = env.step(action)
+        next_obs, reward, terminated, truncated, info = env.step(action)
         actions.append(action.astype(np.float32, copy=True))
         rewards.append(float(reward))
         terminated_flags.append(bool(terminated))
         truncated_flags.append(bool(truncated))
         diagnostics.append(dict(agent.last_diagnostics))
         observations.append(next_obs.copy())
+        states.append(info["state"].astype(np.float32, copy=True))
         if render:
             env.render()
         if terminated or truncated:
@@ -77,6 +79,7 @@ def run_policy_episode(
     truncated_arr = np.asarray(truncated_flags, dtype=bool)[:, None]
     return {
         "obs": np.asarray(observations, dtype=np.float32),
+        "state": np.asarray(states, dtype=np.float32),
         "action": np.asarray(actions, dtype=np.float32),
         "reward": np.asarray(rewards, dtype=np.float32)[:, None],
         "terminated": terminated_arr,
@@ -89,9 +92,10 @@ def run_policy_episode(
 
 def episode_metrics(episode: dict[str, Any], target_xy: tuple[float, float] = (0.0, 0.0)) -> dict[str, float | bool | int]:
     obs = episode["obs"]
+    state = episode.get("state", obs)
     reward = episode["reward"]
     target = np.asarray(target_xy, dtype=np.float32)
-    distance = np.linalg.norm(obs[:, :2] - target[None], axis=-1)
+    distance = np.linalg.norm(state[:, :2] - target[None], axis=-1)
     return {
         "steps": int(max(obs.shape[0] - 1, 0)),
         "return": float(reward.sum()) if reward.size else 0.0,
@@ -121,6 +125,7 @@ def save_episode_npz(episode: dict[str, Any], path: str | Path) -> None:
     np.savez_compressed(
         path,
         obs=episode["obs"],
+        state=episode.get("state", episode["obs"]),
         action=episode["action"],
         reward=episode["reward"],
         terminated=episode["terminated"],
@@ -135,7 +140,7 @@ def save_policy_plots(episode: dict[str, Any], out_dir: str | Path, target_xy: t
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    obs = episode["obs"]
+    obs = episode.get("state", episode["obs"])
     action = episode["action"]
     t_obs = np.arange(obs.shape[0])
     t_action = np.arange(action.shape[0])

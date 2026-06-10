@@ -45,7 +45,7 @@ class SequenceDataset(Dataset[dict[str, torch.Tensor]]):
         self.truncated = arrays.get("truncated")
 
         validate_sequence_arrays(self.obs, self.action, self.reward, self.done, self.terminated, self.truncated)
-        num_episodes, obs_steps, _ = self.obs.shape
+        num_episodes, obs_steps = self.obs.shape[:2]
         action_steps = self.action.shape[1]
         if obs_steps != action_steps + 1:
             raise ValueError("Expected obs.shape[1] == action.shape[1] + 1")
@@ -137,8 +137,8 @@ def validate_sequence_arrays(
     terminated: np.ndarray | None = None,
     truncated: np.ndarray | None = None,
 ) -> None:
-    if obs.ndim != 3:
-        raise ValueError("obs must have shape [N, T + 1, obs_dim]")
+    if obs.ndim < 3:
+        raise ValueError("obs must have shape [N, T + 1, ...]")
     if action.ndim != 3:
         raise ValueError("action must have shape [N, T, action_dim]")
     if obs.shape[0] != action.shape[0]:

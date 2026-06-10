@@ -31,6 +31,8 @@ class BallBalanceConfig:
     reward_min: float = -1.0
     reward_max: float = 1.0
     fall_penalty: float = 1.0
+    observation_mode: str = "pixels"
+    image_size: int = 64
 
     @classmethod
     def from_config(cls, config: "BallBalanceConfig | dict[str, Any] | None") -> "BallBalanceConfig":
@@ -72,29 +74,22 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             raise ValueError("board_size must be positive")
         if self.config.max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be positive")
+        if self.config.observation_mode not in {"pixels", "state"}:
+            raise ValueError("observation_mode must be 'pixels' or 'state'")
+        if self.config.image_size <= 0:
+            raise ValueError("image_size must be positive")
 
         self.render_mode = render_mode
         self.state = np.zeros(6, dtype=np.float64)
         self.step_count = 0
 
-        max_angle = np.float32(self.config.max_angle)
-        half_board = np.float32(self.config.board_size / 2.0)
-        obs_low = np.array(
-            [-1.2 * half_board, -1.2 * half_board, -5.0, -5.0, -max_angle, -max_angle],
-            dtype=np.float32,
-        )
-        obs_high = np.array(
-            [1.2 * half_board, 1.2 * half_board, 5.0, 5.0, max_angle, max_angle],
-            dtype=np.float32,
-        )
-
         self.action_space = spaces.Box(
-            low=-max_angle,
-            high=max_angle,
+            low=-np.float32(self.config.max_angle),
+            high=np.float32(self.config.max_angle),
             shape=(2,),
             dtype=np.float32,
         )
-        self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
+        self.observation_space = self._make_observation_space()
 
         self._fig = None
         self._ax = None
@@ -218,7 +213,27 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         self._board_artist = None
 
     def _get_obs(self) -> np.ndarray:
-        return self.state.astype(np.float32)
+        if self.config.observation_mode == "state":
+            return self.state.astype(np.float32)
+        rgb = self._render_rgb_array()
+        return np.transpose(rgb, (2, 0, 1)).astype(np.float32)
+
+    def _make_observation_space(self) -> spaces.Box:
+        if self.config.observation_mode == "pixels":
+            image_size = self.config.image_size
+            return spaces.Box(low=0.0, high=255.0, shape=(3, image_size, image_size), dtype=np.float32)
+
+        max_angle = np.float32(self.config.max_angle)
+        half_board = np.float32(self.config.board_size / 2.0)
+        obs_low = np.array(
+            [-1.2 * half_board, -1.2 * half_board, -5.0, -5.0, -max_angle, -max_angle],
+            dtype=np.float32,
+        )
+        obs_high = np.array(
+            [1.2 * half_board, 1.2 * half_board, 5.0, 5.0, max_angle, max_angle],
+            dtype=np.float32,
+        )
+        return spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
 
     def _make_info(self, acceleration: np.ndarray, action_clipped: np.ndarray) -> dict[str, Any]:
         fallen = abs(self.state[0]) > self.config.board_size / 2.0 or abs(self.state[1]) > self.config.board_size / 2.0
@@ -234,11 +249,12 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         if self._fig is not None:
             return
 
-        if self.render_mode == "rgb_array":
+        if self.render_mode == "rgb_array" or self.config.observation_mode == "pixels":
             from matplotlib.backends.backend_agg import FigureCanvasAgg
             from matplotlib.figure import Figure
 
-            fig = Figure(figsize=(5, 5), dpi=100)
+            dpi = 100
+            fig = Figure(figsize=(self.config.image_size / dpi, self.config.image_size / dpi), dpi=dpi)
             FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
         else:
@@ -250,19 +266,37 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         half = self.config.board_size / 2.0
         board = ax.add_patch(_rectangle_patch((-half, -half), self.config.board_size, self.config.board_size))
         (ball,) = ax.plot([], [], "o", color="tab:red", markersize=12)
-        ax.axhline(0.0, color="0.85", linewidth=1)
-        ax.axvline(0.0, color="0.85", linewidth=1)
+        ax.axhline(0.0, color="0.85", linewidth=0.8)
+        ax.axvline(0.0, color="0.85", linewidth=0.8)
         ax.set_xlim(-half * 1.15, half * 1.15)
         ax.set_ylim(-half * 1.15, half * 1.15)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.grid(True, color="0.9", linewidth=0.8)
+        if self.config.observation_mode == "pixels":
+            ax.set_axis_off()
+            fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        else:
+            ax.set_xlabel("x [m]")
+            ax.set_ylabel("y [m]")
+            ax.grid(True, color="0.9", linewidth=0.8)
 
         self._fig = fig
         self._ax = ax
         self._board_artist = board
         self._ball_artist = ball
+
+    def _render_rgb_array(self) -> np.ndarray:
+        self._ensure_render_objects()
+        assert self._fig is not None
+        assert self._ax is not None
+        assert self._ball_artist is not None
+
+        x, y = self.state[:2]
+        self._ball_artist.set_data([x], [y])
+        if self.config.observation_mode != "pixels":
+            self._ax.set_title(f"step={self.step_count}  x={x:+.3f}  y={y:+.3f}")
+        self._fig.canvas.draw()
+        rgba = np.asarray(self._fig.canvas.buffer_rgba())
+        return np.ascontiguousarray(rgba[:, :, :3])
 
 
 def _rectangle_patch(xy: tuple[float, float], width: float, height: float):

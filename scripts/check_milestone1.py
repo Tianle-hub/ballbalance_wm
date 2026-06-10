@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--out", type=str, default=None)
     args = parser.parse_args()
 
-    env = BallBalanceEnv()
+    env = BallBalanceEnv(config={"observation_mode": "state"})
     try:
         obs, info = env.reset(seed=0)
         assert obs.shape == (6,)
