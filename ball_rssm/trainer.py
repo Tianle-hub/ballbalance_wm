@@ -17,7 +17,7 @@ from ball_rssm.buffer import Buffer, InitialStateBounds, sample_initial_state
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.envs import BallBalanceEnv
 from ball_rssm.models import Actor, Critic, Normalizer, WorldModel
-from ball_rssm.models.behavior import discount_weights, lambda_return
+from ball_rssm.models.behavior import compute_return, discount_weights
 from ball_rssm.models.rssm import RSSMState, stack_states
 from ball_rssm.utils.checkpoint import save_checkpoint
 
@@ -391,14 +391,13 @@ class Trainer:
             continuation = self.world_model.predict_continuation_sequence(states)
             pcont = self.config.discount * continuation
             value = self.critic(features)
-            returns = lambda_return(
-                reward[:, :-1],
-                value[:, :-1],
-                value[:, -1],
-                pcont[:, :-1],
+            returns = compute_return(
+                reward[:, :-1].transpose(0, 1),
+                value[:, :-1].transpose(0, 1),
+                pcont[:, :-1].transpose(0, 1),
                 self.config.lambda_,
-                stop_gradient=False,
-            )
+                value[:, -1],
+            ).transpose(0, 1)
             weights = discount_weights(pcont[:, :-1]).detach()
             objective = (weights * returns).mean()
             entropy_bonus = entropy[:, :-1].mean()
@@ -422,14 +421,13 @@ class Trainer:
             continuation = self.world_model.predict_continuation_sequence(states)
             pcont = self.config.discount * continuation
             target_value = self.target_critic(features)
-            returns = lambda_return(
-                reward[:, :-1],
-                target_value[:, :-1],
-                target_value[:, -1],
-                pcont[:, :-1],
+            returns = compute_return(
+                reward[:, :-1].transpose(0, 1),
+                target_value[:, :-1].transpose(0, 1),
+                pcont[:, :-1].transpose(0, 1),
                 self.config.lambda_,
-                stop_gradient=True,
-            )
+                target_value[:, -1],
+            ).transpose(0, 1)
             weights = discount_weights(pcont[:, :-1]).detach()
             features = features[:, :-1].detach()
             returns = returns.detach()

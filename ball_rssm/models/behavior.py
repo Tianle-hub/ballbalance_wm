@@ -80,8 +80,8 @@ class BoundedActionDistribution:
         return low + 0.5 * (squashed + 1.0) * (high - low)
 
 
-class Actor(nn.Module):
-    """Continuous Dreamer actor over normalized actions."""
+class ActionDecoder(nn.Module):
+    """Continuous Dreamer action decoder over normalized actions."""
 
     def __init__(self, config: ActorConfig) -> None:
         super().__init__()
@@ -97,15 +97,16 @@ class Actor(nn.Module):
             raise ValueError("action_high must be greater than action_low")
 
         self.config = config
-        self.net = build_mlp(config.feature_dim, config.hidden_dim, 2 * config.action_dim)
+        self.action_size = config.action_dim
+        self.action_model = build_mlp(config.feature_dim, config.hidden_dim, 2 * config.action_dim)
         self.register_buffer("action_low", action_low)
         self.register_buffer("action_high", action_high)
 
-    def forward(self, features: torch.Tensor) -> BoundedActionDistribution:
+    def get_dist(self, features: torch.Tensor) -> BoundedActionDistribution:
         # DreamerV1 adds this learned policy head on RSSM features; PlaNet used
         # the world model at control time with an external action optimizer.
         flat = features.reshape(-1, features.shape[-1])
-        mean_raw, std_raw = torch.chunk(self.net(flat), 2, dim=-1)
+        mean_raw, std_raw = torch.chunk(self.action_model(flat), 2, dim=-1)
         mean = torch.tanh(mean_raw)
         std = softplus_std(std_raw, self.config.min_std).clamp(max=self.config.max_std)
         mean = mean.reshape(*features.shape[:-1], -1)
@@ -113,25 +114,92 @@ class Actor(nn.Module):
         dist = Independent(Normal(mean, std), 1)
         return BoundedActionDistribution(dist, self.action_low, self.action_high)
 
+    def forward(self, features: torch.Tensor, deter: bool = False) -> torch.Tensor | BoundedActionDistribution:
+        dist = self.get_dist(features)
+        return dist.mode() if deter else dist
+
     def sample(self, features: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
-        dist = self(features)
+        dist = self.get_dist(features)
         return dist.mode() if deterministic else dist.rsample()
 
+    def add_exploration(self, action: torch.Tensor, action_noise: float = 0.3) -> torch.Tensor:
+        if action_noise <= 0.0:
+            return action
+        noisy = Normal(action, action_noise).rsample()
+        low = self.action_low.to(device=noisy.device, dtype=noisy.dtype)
+        high = self.action_high.to(device=noisy.device, dtype=noisy.dtype)
+        while low.ndim < noisy.ndim:
+            low = low.unsqueeze(0)
+            high = high.unsqueeze(0)
+        return torch.max(torch.min(noisy, high), low)
 
-class Critic(nn.Module):
-    """Scalar value model over Dreamer latent features."""
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        legacy_prefix = prefix + "net."
+        current_prefix = prefix + "action_model."
+        for key in list(state_dict):
+            if key.startswith(legacy_prefix):
+                state_dict[current_prefix + key[len(legacy_prefix) :]] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+class Actor(ActionDecoder):
+    """Compatibility name for the Dreamer action decoder."""
+
+
+class DenseDecoder(nn.Module):
+    """Dense scalar decoder used as the Dreamer value model."""
 
     def __init__(self, config: CriticConfig) -> None:
         super().__init__()
         self.config = config
-        self.net = build_mlp(config.feature_dim, config.hidden_dim, 1)
+        self.value_model = build_mlp(config.feature_dim, config.hidden_dim, 1)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         # DreamerV1 learns a value bootstrap for imagined TD(lambda) returns.
         # PlaNet did not need this critic because it planned finite horizons.
         flat = features.reshape(-1, features.shape[-1])
-        value = self.net(flat)
+        value = self.value_model(flat)
         return value.reshape(*features.shape[:-1], 1)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        legacy_prefix = prefix + "net."
+        current_prefix = prefix + "value_model."
+        for key in list(state_dict):
+            if key.startswith(legacy_prefix):
+                state_dict[current_prefix + key[len(legacy_prefix) :]] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+class Critic(DenseDecoder):
+    """Compatibility name for the Dreamer scalar value model."""
+
+
+def compute_return(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    discounts: torch.Tensor,
+    td_lam: float,
+    last_value: torch.Tensor,
+) -> torch.Tensor:
+    """Compute time-major Dreamer TD(lambda) returns with reverse recursion."""
+
+    if rewards.shape != values.shape or rewards.shape != discounts.shape:
+        raise ValueError("rewards, values, and discounts must share shape [time, batch, 1]")
+    if last_value.shape != rewards[-1].shape:
+        raise ValueError("last_value must have shape [batch, 1]")
+    if not 0.0 <= td_lam <= 1.0:
+        raise ValueError("td_lam must be in [0, 1]")
+
+    next_values = torch.cat([values[1:], last_value.unsqueeze(0)], dim=0)
+    reward_with_bootstrap = rewards + discounts * next_values * (1.0 - td_lam)
+
+    returns: list[torch.Tensor] = []
+    next_return = last_value
+    for t in range(rewards.shape[0] - 1, -1, -1):
+        next_return = reward_with_bootstrap[t] + discounts[t] * td_lam * next_return
+        returns.append(next_return)
+
+    return torch.flip(torch.stack(returns), dims=[0])
 
 
 def lambda_return(
@@ -144,8 +212,6 @@ def lambda_return(
 ) -> torch.Tensor:
     """Compute Dreamer TD(lambda) returns along time dimension 1."""
 
-    # Actor and critic targets come from imagined rewards plus a learned value
-    # bootstrap, replacing PlaNet's direct CEM objective over candidate actions.
     if reward.shape != value.shape or reward.shape != pcont.shape:
         raise ValueError("reward, value, and pcont must share shape [batch, time, 1]")
     if bootstrap.shape != reward[:, 0].shape:
@@ -153,14 +219,13 @@ def lambda_return(
     if not 0.0 <= lambda_ <= 1.0:
         raise ValueError("lambda_ must be in [0, 1]")
 
-    next_values = torch.cat([value[:, 1:], bootstrap.unsqueeze(1)], dim=1)
-    inputs = reward + pcont * next_values * (1.0 - lambda_)
-    returns: list[torch.Tensor] = []
-    last = bootstrap
-    for t in reversed(range(inputs.shape[1])):
-        last = inputs[:, t] + pcont[:, t] * lambda_ * last
-        returns.append(last)
-    returns = torch.stack(list(reversed(returns)), dim=1)
+    returns = compute_return(
+        reward.transpose(0, 1),
+        value.transpose(0, 1),
+        pcont.transpose(0, 1),
+        lambda_,
+        bootstrap,
+    ).transpose(0, 1)
     return returns.detach() if stop_gradient else returns
 
 

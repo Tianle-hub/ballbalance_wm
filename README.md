@@ -98,19 +98,24 @@ Online training starts with seed replay collected into the buffer, then alternat
 ```bash
 python scripts/train_dreamer.py \
   --train-mode online \
-  --run-dir runs/dreamer_ball_online_v2 \
+  --run-dir runs/dreamer_ball_online_v2_more_data \
   --dreamer-version v2 \
-  --seed-episodes 200 \
-  --buffer-episodes 5000 \
+  --seed-episodes 1000 \
+  --buffer-episodes 20000 \
   --max-episode-steps 300 \
   --seed-policy-mode coverage \
-  --online-iterations 100 \
-  --update-steps 100 \
-  --collect-episodes 10 \
+  --pos-bound 0.45 \
+  --vel-bound 0.40 \
+  --angle-bound 0.12 \
+  --target-bound 0.15 \
+  --action-noise-std 0.04 \
+  --online-iterations 300 \
+  --update-steps 150 \
+  --collect-episodes 25 \
   --exploration-noise 0.3 \
-  --exploration-decay 0.99 \
+  --exploration-decay 0.995 \
   --min-exploration-noise 0.05 \
-  --seq-len 100 \
+  --seq-len 150 \
   --batch-size 256
 ```
 
@@ -132,7 +137,7 @@ Checkpoints are written under `runs/dreamer_ball_v0/checkpoints/` and contain th
 
 ```bash
 python scripts/run_dreamer_policy.py \
-  --checkpoint runs/dreamer_ball_v0/checkpoints/best.pt \
+  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
   --num-episodes 20 \
   --max-steps 300 \
   --save-plots \
