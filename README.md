@@ -100,7 +100,7 @@ python scripts/train_dreamer.py \
   --train-mode online \
   --run-dir runs/dreamer_ball_online_v2_more_data \
   --dreamer-version v2 \
-  --seed-episodes 1000 \ 
+  --seed-episodes 200 \
   --buffer-episodes 20000 \
   --max-episode-steps 300 \
   --seed-policy-mode coverage \
@@ -111,7 +111,7 @@ python scripts/train_dreamer.py \
   --action-noise-std 0.04 \
   --online-iterations 300 \
   --update-steps 150 \
-  --collect-episodes 25 \
+  --collect-episodes 50 \
   --exploration-noise 0.3 \
   --exploration-decay 0.995 \
   --min-exploration-noise 0.05 \
@@ -120,6 +120,52 @@ python scripts/train_dreamer.py \
 ```
 
 If `--dataset` is supplied in online mode, that replay is used as the seed buffer. Otherwise the script collects `--seed-episodes` using `--seed-policy-mode`. Online replay is saved to `runs/.../replay/latest.npz` so resumed runs can continue from the latest actor-collected buffer.
+
+Coverage-initialized online DreamerV1:
+
+```bash
+python scripts/train_dreamer.py \
+  --train-mode online \
+  --dataset data/ball_balance_coverage_v0.npz \
+  --run-dir runs/dreamer_ball_online_v1_coverage_init \
+  --dreamer-version v1 \
+  --actor-gradient dynamics \
+  --exploration-mode noise \
+  --buffer-episodes 20000 \
+  --max-episode-steps 300 \
+  --online-iterations 300 \
+  --update-steps 150 \
+  --collect-episodes 50 \
+  --exploration-noise 0.3 \
+  --exploration-decay 0.995 \
+  --min-exploration-noise 0.05 \
+  --seq-len 200 \
+  --batch-size 256
+```
+
+Coverage-initialized DreamerV2 latents with dynamics actor gradients:
+
+```bash
+python scripts/train_dreamer.py \
+  --train-mode online \
+  --dataset data/ball_balance_coverage_v0.npz \
+  --run-dir runs/dreamer_ball_online_v2_coverage_init_dynamics \
+  --dreamer-version v2 \
+  --actor-gradient dynamics \
+  --exploration-mode policy_entropy \
+  --buffer-episodes 20000 \
+  --max-episode-steps 300 \
+  --online-iterations 300 \
+  --update-steps 150 \
+  --collect-episodes 50 \
+  --exploration-noise 0.3 \
+  --exploration-decay 0.995 \
+  --min-exploration-noise 0.05 \
+  --seq-len 200 \
+  --batch-size 256
+```
+
+In the V2 command above, `--actor-gradient dynamics` disables REINFORCE while keeping the V2 categorical RSSM and KL balancing. `--exploration-mode policy_entropy` samples from the actor distribution during data collection and ignores the external noise schedule; switch it to `noise` if you want V1-style Gaussian action noise instead.
 
 Each batch performs:
 
