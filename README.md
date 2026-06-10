@@ -190,6 +190,19 @@ python scripts/run_dreamer_policy.py \
   --save-episodes
 ```
 
+For a live closed-loop visualizer that runs the same policy evaluation path:
+
+```bash
+python scripts/visualize_dreamer_policy.py \
+  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
+  --num-episodes 3 \
+  --max-steps 300 \
+  --play 
+  # --save-gif \
+  # --save-plots \
+  # --save-episodes
+```
+
 This runs closed-loop control as:
 
 ```text
@@ -210,6 +223,7 @@ python scripts/eval_rssm_prediction.py \
   --horizon 50
 ```
 
+To check the latent dynamics model, todo: add an argument as num of different play, so we can check multiple runs
 ```bash
 python scripts/visualize_rssm_rollout.py \
   --checkpoint runs/dreamer_ball_v0/checkpoints/best.pt \
