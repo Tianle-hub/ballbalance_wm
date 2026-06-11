@@ -324,6 +324,8 @@ class Trainer:
         terminated: torch.Tensor | None,
     ) -> dict[str, torch.Tensor]:
         self.world_optimizer.zero_grad(set_to_none=True)
+
+        # TODO: I wonder whether it is common technique to first update the world model paras, and then update actor, and critic
         # First update the RSSM and prediction heads on real replay sequences,
         # then use the updated model to create starts for Dreamer behavior.
         world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated)
@@ -414,6 +416,8 @@ class Trainer:
             weights = discount_weights(pcont[:, :-1]).detach()
             entropy_bonus = entropy[:, :-1].mean()
             if self.actor_gradient == "reinforce":
+                # TODO: seems lack dynamics backprop term given in Eq. 6 of the DreamerV2 paper,
+                # is the weights here = rho(p) in the paper
                 advantage = (returns - value[:, :-1]).detach()
                 reinforce_objective = (weights * log_prob[:, :-1] * advantage).mean()
                 objective = (weights * returns.detach()).mean()
@@ -421,6 +425,7 @@ class Trainer:
             else:
                 reinforce_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
                 objective = (weights * returns).mean()
+                # TODO: check, if no reinforce technique, why still have entropy_bonus term in the loss?
                 loss = -objective - self.config.actor_entropy_scale * entropy_bonus
         metrics = {
             "actor_loss": loss.detach(),

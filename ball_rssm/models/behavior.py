@@ -204,7 +204,7 @@ def compute_return(
     for t in range(rewards.shape[0] - 1, -1, -1):
         next_return = reward_with_bootstrap[t] + discounts[t] * td_lam * next_return
         returns.append(next_return)
-
+    # TODO: check if I need if t = H condition, then next_return = rewards + discounts * values[t] 
     return torch.flip(torch.stack(returns), dims=[0])
 
 
