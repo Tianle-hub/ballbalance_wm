@@ -24,7 +24,10 @@ class BallBalanceConfig:
     init_pos_range: float = 0.20
     init_vel_range: float = 0.05
     reward_pos_weight: float = 1.0
-    # TODO: test following weight
+    reward_center_bonus_weight: float = 0.25
+    reward_center_sigma: float = 0.02 #0.05
+    reward_edge_warning_start: float = 0.40
+    reward_edge_warning_weight: float = 0.75
     reward_vel_weight: float = 0.10
     reward_angle_weight: float = 2.0
     reward_action_weight: float = 0.05
@@ -72,6 +75,14 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             raise ValueError("board_size must be positive")
         if self.config.max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be positive")
+        if self.config.reward_center_bonus_weight < 0.0:
+            raise ValueError("reward_center_bonus_weight must be non-negative")
+        if self.config.reward_center_sigma <= 0.0:
+            raise ValueError("reward_center_sigma must be positive")
+        if self.config.reward_edge_warning_start < 0.0:
+            raise ValueError("reward_edge_warning_start must be non-negative")
+        if self.config.reward_edge_warning_weight < 0.0:
+            raise ValueError("reward_edge_warning_weight must be non-negative")
 
         self.render_mode = render_mode
         self.state = np.zeros(6, dtype=np.float64)
@@ -165,14 +176,16 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         if fallen:
             reward = -abs(cfg.fall_penalty)
         else:
-            max_dist = cfg.board_size / 2.0
-            pos_cost = (x**2 + y**2) / max(max_dist**2, 1e-12)
-            reward = (
-                1.0
-                - cfg.reward_pos_weight * pos_cost
-                - cfg.reward_vel_weight * (vx**2 + vy**2)
-                - cfg.reward_angle_weight * (theta_x**2 + theta_y**2)
-                - cfg.reward_action_weight * (theta_x_cmd**2 + theta_y_cmd**2)
+            reward = shaped_reward(
+                cfg,
+                x=x,
+                y=y,
+                vx=vx,
+                vy=vy,
+                theta_x=theta_x,
+                theta_y=theta_y,
+                theta_x_cmd=theta_x_cmd,
+                theta_y_cmd=theta_y_cmd,
             )
             reward = float(np.clip(reward, cfg.reward_min, cfg.reward_max))
 
@@ -269,3 +282,48 @@ def _rectangle_patch(xy: tuple[float, float], width: float, height: float):
     from matplotlib.patches import Rectangle
 
     return Rectangle(xy, width, height, fill=False, linewidth=2, edgecolor="black")
+
+
+def shaped_reward(
+    cfg: BallBalanceConfig,
+    x: float,
+    y: float,
+    vx: float,
+    vy: float,
+    theta_x: float,
+    theta_y: float,
+    theta_x_cmd: float,
+    theta_y_cmd: float,
+) -> float:
+    """Return the smooth non-terminal shaped reward."""
+
+    half_board = cfg.board_size / 2.0
+    dist2 = x**2 + y**2
+    pos_cost = dist2 / max(half_board**2, 1e-12)
+    center_bonus = np.exp(-dist2 / (2.0 * cfg.reward_center_sigma**2))
+    edge_penalty = edge_warning_penalty(cfg, x=x, y=y)
+
+    # The base is lowered by the center weight so reward remains 1.0 at the
+    # center without clipping away the useful shape of the exponential bonus.
+    return float(
+        1.0
+        - cfg.reward_center_bonus_weight
+        + cfg.reward_center_bonus_weight * center_bonus
+        - cfg.reward_pos_weight * pos_cost
+        - cfg.reward_edge_warning_weight * edge_penalty
+        - cfg.reward_vel_weight * (vx**2 + vy**2)
+        - cfg.reward_angle_weight * (theta_x**2 + theta_y**2)
+        - cfg.reward_action_weight * (theta_x_cmd**2 + theta_y_cmd**2)
+    )
+
+
+def edge_warning_penalty(cfg: BallBalanceConfig, x: float, y: float) -> float:
+    """Quadratic warning that starts before the terminal board boundary."""
+
+    half_board = cfg.board_size / 2.0
+    start = min(cfg.reward_edge_warning_start, half_board)
+    if start >= half_board:
+        return 0.0
+    max_abs_pos = max(abs(x), abs(y))
+    progress = np.clip((max_abs_pos - start) / max(half_board - start, 1e-12), 0.0, 1.0)
+    return float(progress**2)

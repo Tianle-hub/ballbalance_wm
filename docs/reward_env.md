@@ -1,39 +1,46 @@
-Yes, I’d consider it, but I’d use it as a center bonus, not necessarily replace the whole reward with only an exponential.
+# Reward Design
 
-Your current quadratic position term barely distinguishes 0.00 m from 0.01 m. An exponential can make “very near center” meaningfully better:
+The non-terminal reward is shaped to stay smooth for the reward and value
+models while still making the center and the board edge easy to distinguish.
 
+Inside the board:
+
+```python
 dist2 = x**2 + y**2
-center_bonus = np.exp(-dist2 / (2.0 * center_sigma**2))
-For example, center_sigma=0.05 means being 1 cm away still costs about 0.02 reward, much stronger than the current 0.0004.
-
-A good shaped reward could be:
-
-dist2 = x**2 + y**2
-vel2 = vx**2 + vy**2
-angle2 = theta_x**2 + theta_y**2
-action2 = theta_x_cmd**2 + theta_y_cmd**2
-
-center_bonus = np.exp(-dist2 / (2.0 * 0.05**2))
-
-reward = (
-    center_bonus
-    - 0.15 * vel2
-    - 1.0 * angle2
-    - 0.02 * action2
-)
-I’d avoid making the exponential too narrow at first. If center_sigma is tiny, the reward becomes almost sparse unless the ball is already centered, and learning can get harder. Try 0.05, then maybe 0.03.
-
-My strongest recommendation: use a hybrid reward:
-
-broad_position = -0.5 * dist2 / (0.5**2)
-center_bonus = 0.5 * np.exp(-dist2 / (2.0 * 0.05**2))
+center_bonus = exp(-dist2 / (2 * center_sigma**2))
+edge_penalty = quadratic_warning_from_abs_position_0_4_to_0_5
 
 reward = (
     1.0
-    + broad_position
-    + center_bonus
-    - vel_weight * vel2
-    - angle_weight * angle2
-    - action_weight * action2
+    - center_bonus_weight
+    + center_bonus_weight * center_bonus
+    - pos_weight * dist2 / half_board**2
+    - edge_warning_weight * edge_penalty
+    - vel_weight * (vx**2 + vy**2)
+    - angle_weight * (theta_x**2 + theta_y**2)
+    - action_weight * (theta_x_cmd**2 + theta_y_cmd**2)
 )
-That gives broad guidance from far away, plus a sharper reason to stop at the center. Also increase velocity penalty a bit, because oscillation is often “near center but still moving,” not just “wrong position.”
+```
+
+The center bonus is implemented this way so the reward is still exactly `1.0`
+at the center without clipping away the useful exponential shape around it.
+
+The edge warning starts at `|position| = 0.40`, which is 80% of the way to the
+default board boundary at `0.50`. It increases quadratically until the terminal
+boundary, where falling still returns `-1.0`.
+
+Default reward parameters:
+
+```text
+reward_center_bonus_weight = 0.25
+reward_center_sigma = 0.05
+reward_edge_warning_start = 0.40
+reward_edge_warning_weight = 0.75
+```
+
+For review, see the generated one-dimensional curve with velocity, board angle,
+and action set to zero:
+
+```text
+docs/reward_position_curve.svg
+```
