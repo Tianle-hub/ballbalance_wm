@@ -93,9 +93,12 @@ def main() -> None:
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.95)
     parser.add_argument(
         "--actor-gradient",
-        choices=["auto", "dynamics", "reinforce"],
+        choices=["auto", "dynamics", "reinforce", "both"],
         default="auto",
-        help="Actor gradient estimator. auto uses dynamics for V1 and reinforce for V2.",
+        help=(
+            "Actor gradient estimator. auto uses reinforce for discrete actors and dynamics for continuous actors; "
+            "both mixes score-function and dynamics terms."
+        ),
     )
     parser.add_argument("--actor-entropy-scale", type=float, default=1e-3)
     parser.add_argument(

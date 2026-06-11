@@ -70,6 +70,12 @@ class BoundedActionDistribution:
         log_prob = self.base_dist.log_prob(raw)
         return action, log_prob
 
+    def rsample_with_log_prob(self) -> tuple[torch.Tensor, torch.Tensor]:
+        raw = self.base_dist.rsample()
+        action = self._scale(torch.tanh(raw))
+        log_prob = self.base_dist.log_prob(raw.detach())
+        return action, log_prob
+
     def mode(self) -> torch.Tensor:
         raw_mean = self.base_dist.base_dist.mean
         return self._scale(torch.tanh(raw_mean))
@@ -88,6 +94,8 @@ class BoundedActionDistribution:
 
 class ActionDecoder(nn.Module):
     """Continuous Dreamer action decoder over normalized actions."""
+
+    is_discrete_action = False
 
     def __init__(self, config: ActorConfig) -> None:
         super().__init__()

@@ -127,20 +127,20 @@ Coverage-initialized online DreamerV1:
 python scripts/train_dreamer.py \
   --train-mode online \
   --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_online_v1_coverage_init \
+  --run-dir runs/dreamer_ball_online_v1_coverage_init_center_bonus \
   --dreamer-version v1 \
-  --actor-gradient dynamics \
+  --actor-gradient auto \
   --exploration-mode noise \
-  --buffer-episodes 20000 \
+  --buffer-episodes 5000 \
   --max-episode-steps 300 \
-  --online-iterations 300 \
+  --online-iterations 100 \
   --update-steps 150 \
-  --collect-episodes 50 \
+  --collect-episodes 100 \
   --exploration-noise 0.3 \
   --exploration-decay 0.995 \
   --min-exploration-noise 0.05 \
   --seq-len 200 \
-  --batch-size 256
+  --batch-size 512
 ```
 
 Coverage-initialized DreamerV2 latents with dynamics actor gradients:
@@ -149,23 +149,23 @@ Coverage-initialized DreamerV2 latents with dynamics actor gradients:
 python scripts/train_dreamer.py \
   --train-mode online \
   --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_online_v2_coverage_init_dynamics \
+  --run-dir runs/dreamer_ball_online_v2_coverage_init_center_bonus \
   --dreamer-version v2 \
-  --actor-gradient dynamics \
+  --actor-gradient auto \
   --exploration-mode policy_entropy \
-  --buffer-episodes 20000 \
+  --buffer-episodes 5000 \
   --max-episode-steps 300 \
-  --online-iterations 300 \
+  --online-iterations 100 \
   --update-steps 150 \
-  --collect-episodes 50 \
+  --collect-episodes 100 \
   --exploration-noise 0.3 \
   --exploration-decay 0.995 \
   --min-exploration-noise 0.05 \
   --seq-len 200 \
-  --batch-size 256
+  --batch-size 512
 ```
 
-In the V2 command above, `--actor-gradient dynamics` disables REINFORCE while keeping the V2 categorical RSSM and KL balancing. `--exploration-mode policy_entropy` samples from the actor distribution during data collection and ignores the external noise schedule; switch it to `noise` if you want V1-style Gaussian action noise instead.
+In the V2 command above, `--actor-gradient auto` resolves to `dynamics` because ball balance uses continuous actions. This disables REINFORCE while keeping the V2 categorical RSSM and KL balancing. Use `--actor-gradient both` to try the DreamerV2 Eq. 6 style mixture of score-function and dynamics terms. `--exploration-mode policy_entropy` samples from the actor distribution during data collection and ignores the external noise schedule; switch it to `noise` if you want V1-style Gaussian action noise instead.
 
 Each batch performs:
 

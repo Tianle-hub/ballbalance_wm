@@ -415,25 +415,36 @@ class Trainer:
             ).transpose(0, 1)
             weights = discount_weights(pcont[:, :-1]).detach()
             entropy_bonus = entropy[:, :-1].mean()
-            if self.actor_gradient == "reinforce":
-                # TODO: seems lack dynamics backprop term given in Eq. 6 of the DreamerV2 paper,
-                # is the weights here = rho(p) in the paper
+            if self.actor_gradient in {"reinforce", "both"}:
                 advantage = (returns - value[:, :-1]).detach()
                 reinforce_objective = (weights * log_prob[:, :-1] * advantage).mean()
-                objective = (weights * returns.detach()).mean()
-                loss = -reinforce_objective - self.config.actor_entropy_scale * entropy_bonus
             else:
                 reinforce_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
-                objective = (weights * returns).mean()
-                # TODO: check, if no reinforce technique, why still have entropy_bonus term in the loss?
-                loss = -objective - self.config.actor_entropy_scale * entropy_bonus
+            if self.actor_gradient in {"dynamics", "both"}:
+                dynamics_objective = (weights * returns).mean()
+            else:
+                dynamics_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
+
+            # Actor gradient modes:
+            # - reinforce: score-function objective only.
+            # - dynamics: pathwise/dynamics backpropagation objective only.
+            # - both: DreamerV2 Eq. 6 style mixture of both terms.
+            objective = reinforce_objective + dynamics_objective
+            imagined_return_objective = (weights * returns.detach()).mean()
+            loss = -objective - self.config.actor_entropy_scale * entropy_bonus
         metrics = {
             "actor_loss": loss.detach(),
             "actor_objective": objective.detach(),
+            "actor_imagined_return_objective": imagined_return_objective.detach(),
+            "actor_dynamics_objective": dynamics_objective.detach(),
             "actor_reinforce_objective": reinforce_objective.detach(),
             "actor_entropy": entropy_bonus.detach(),
             "actor_gradient_reinforce": torch.as_tensor(
                 float(self.actor_gradient == "reinforce"),
+                device=start.h.device,
+            ),
+            "actor_gradient_both": torch.as_tensor(
+                float(self.actor_gradient == "both"),
                 device=start.h.device,
             ),
             "imagined_reward_mean": reward.detach().mean(),
@@ -494,6 +505,8 @@ class Trainer:
             elif actor_gradient == "reinforce":
                 action, log_prob = dist.sample_with_log_prob()
                 action = action.detach()
+            elif actor_gradient == "both":
+                action, log_prob = dist.rsample_with_log_prob()
             else:
                 action = dist.rsample()
                 log_prob = torch.zeros(action.shape[:-1], device=action.device, dtype=action.dtype)
@@ -667,7 +680,7 @@ class Trainer:
 
     def resolve_actor_gradient(self) -> str:
         if self.config.actor_gradient == "auto":
-            return "reinforce" if self.world_model.config.is_v2 else "dynamics"
+            return "reinforce" if actor_uses_discrete_actions(self.actor) else "dynamics"
         return self.config.actor_gradient
 
     def resolve_exploration_mode(self) -> str:
@@ -849,9 +862,13 @@ def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
 
 def normalize_actor_gradient(mode: object) -> str:
     normalized = str(mode).lower().strip().replace("-", "_")
-    if normalized in {"auto", "dynamics", "reinforce"}:
+    if normalized in {"auto", "dynamics", "reinforce", "both"}:
         return normalized
-    raise ValueError("actor_gradient must be one of: auto, dynamics, reinforce")
+    raise ValueError("actor_gradient must be one of: auto, dynamics, reinforce, both")
+
+
+def actor_uses_discrete_actions(actor: Actor) -> bool:
+    return bool(getattr(actor, "is_discrete_action", False))
 
 
 def normalize_exploration_mode(mode: object) -> str:

@@ -116,7 +116,7 @@ def test_trainer_updates_world_actor_and_critic_one_batch(tmp_path) -> None:
         assert torch.isfinite(metrics[key])
 
 
-def test_dreamer_v2_auto_uses_reinforce_and_policy_entropy_collection(tmp_path) -> None:
+def test_dreamer_v2_auto_uses_dynamics_for_continuous_actions(tmp_path) -> None:
     seed_buffer = Buffer.collect_data(num_episodes=1, max_episode_steps=4, seed=2, mode="random_smooth")
     dataset = seed_buffer.sequence_dataset(seq_len=3, split="all")
     train_obs, train_action, train_reward = dataset.selected_arrays()
@@ -164,10 +164,64 @@ def test_dreamer_v2_auto_uses_reinforce_and_policy_entropy_collection(tmp_path) 
     loss.backward()
 
     actor_grads = [param.grad for param in actor.parameters() if param.grad is not None]
-    assert trainer.actor_gradient == "reinforce"
+    assert trainer.actor_gradient == "dynamics"
     assert trainer.exploration_mode == "policy_entropy"
     assert trainer.effective_exploration_noise(0.3) == 0.0
-    assert metrics["actor_gradient_reinforce"].item() == 1.0
+    assert metrics["actor_gradient_reinforce"].item() == 0.0
+    assert actor_grads
+    assert all(torch.all(torch.isfinite(grad)) for grad in actor_grads)
+
+
+def test_actor_gradient_both_keeps_dynamics_and_reinforce_terms(tmp_path) -> None:
+    seed_buffer = Buffer.collect_data(num_episodes=1, max_episode_steps=4, seed=3, mode="random_smooth")
+    dataset = seed_buffer.sequence_dataset(seq_len=3, split="all")
+    train_obs, train_action, train_reward = dataset.selected_arrays()
+    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
+
+    world_config = WorldModelConfig(deter_dim=12, stoch_dim=3, embed_dim=8, hidden_dim=12)
+    world_model = WorldModel(world_config)
+    actor = Actor(
+        ActorConfig(
+            feature_dim=world_model.feature_dim,
+            action_dim=world_config.action_dim,
+            hidden_dim=12,
+            action_low=(-1.0, -1.0),
+            action_high=(1.0, 1.0),
+        )
+    )
+    critic = Critic(CriticConfig(feature_dim=world_model.feature_dim, hidden_dim=12))
+    target_critic = Critic(CriticConfig(feature_dim=world_model.feature_dim, hidden_dim=12))
+    target_critic.load_state_dict(critic.state_dict())
+    trainer = Trainer(
+        world_model=world_model,
+        actor=actor,
+        critic=critic,
+        target_critic=target_critic,
+        buffer=seed_buffer,
+        world_optimizer=torch.optim.Adam(world_model.parameters(), lr=1e-3),
+        actor_optimizer=torch.optim.Adam(actor.parameters(), lr=1e-3),
+        critic_optimizer=torch.optim.Adam(critic.parameters(), lr=1e-3),
+        normalizer=normalizer,
+        device=torch.device("cpu"),
+        run_dir=tmp_path,
+        config=DreamerTrainConfig(
+            imagination_horizon=3,
+            behavior_batch_size=3,
+            actor_gradient="both",
+            grad_clip=10.0,
+        ),
+    )
+    start = world_model.initial_state(batch_size=2, device="cpu")
+
+    loss, metrics = trainer.actor_loss(start)
+    trainer.actor_optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+
+    actor_grads = [param.grad for param in actor.parameters() if param.grad is not None]
+    assert trainer.actor_gradient == "both"
+    assert metrics["actor_gradient_both"].item() == 1.0
+    assert torch.isfinite(metrics["actor_dynamics_objective"])
+    assert torch.isfinite(metrics["actor_reinforce_objective"])
     assert actor_grads
     assert all(torch.all(torch.isfinite(grad)) for grad in actor_grads)
 

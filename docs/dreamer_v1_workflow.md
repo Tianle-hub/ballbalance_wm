@@ -15,16 +15,21 @@ actor directly from the RSSM belief state.
 | Option | RSSM latent | KL loss | Auto actor gradient | Auto online exploration |
 | --- | --- | --- | --- | --- |
 | `v1` | continuous Gaussian `z` with `stoch_dim` features | mean posterior-prior KL with `free_nats` | `dynamics` | `noise` |
-| `v2` | straight-through categorical `z` with `stoch_dim * discrete_classes` features | KL balance via `kl_alpha * dynamics_kl + (1 - kl_alpha) * representation_kl` | `reinforce` | `policy_entropy` |
+| `v2` | straight-through categorical `z` with `stoch_dim * discrete_classes` features | KL balance via `kl_alpha * dynamics_kl + (1 - kl_alpha) * representation_kl` | action-space dependent | `policy_entropy` |
 
 The mode knobs are independent after initialization:
 
-- `--actor-gradient auto` resolves to `dynamics` for V1 and `reinforce` for V2.
+- `--actor-gradient auto` resolves to `reinforce` for discrete actors and
+  `dynamics` for continuous actors. Ball balance currently uses a continuous
+  action actor, so both V1 and V2 resolve to `dynamics`.
 - `--actor-gradient dynamics` backpropagates imagined TD(lambda) returns through
   the frozen world-model transition and critic output into actor actions.
 - `--actor-gradient reinforce` samples actions for a score-function objective,
   detaches imagined actions, and weights log-probabilities by imagined
   advantages.
+- `--actor-gradient both` combines the score-function term and the
+  pathwise/dynamics backpropagation term, matching the DreamerV2 Eq. 6 style
+  actor objective.
 - `--exploration-mode auto` resolves to `noise` for V1 and `policy_entropy` for
   V2.
 - `--exploration-mode noise` keeps stochastic actor collection and adds scheduled
@@ -33,8 +38,8 @@ The mode knobs are independent after initialization:
   suppresses the external Gaussian noise schedule.
 
 This makes hybrid ablations valid. For example, `--dreamer-version v2
---actor-gradient dynamics` keeps categorical latents and KL balancing while using
-the V1-style actor gradient.
+--actor-gradient reinforce` keeps categorical latents and KL balancing while
+forcing the Atari-style score-function actor gradient.
 
 ## Shared Batch Update
 
@@ -220,11 +225,16 @@ and metrics, but the effective external noise used for collection is `0.0`.
 - `posterior_std_mean` and `prior_std_mean`: V1 Gaussian RSSM statistics.
 - `posterior_entropy_mean` and `prior_entropy_mean`: V2 categorical RSSM
   statistics.
-- `actor_objective`: imagined return objective before sign flip.
-- `actor_reinforce_objective`: nonzero only when using `reinforce` actor
+- `actor_objective`: actor optimization objective before sign flip.
+- `actor_imagined_return_objective`: discounted imagined return used for
+  diagnostics.
+- `actor_dynamics_objective`: nonzero when using `dynamics` or `both` actor
   gradients.
-- `actor_gradient_reinforce`: `1.0` for REINFORCE, `0.0` for dynamics
-  backpropagation.
+- `actor_reinforce_objective`: nonzero when using `reinforce` or `both` actor
+  gradients.
+- `actor_gradient_reinforce`: `1.0` for REINFORCE-only, `0.0` otherwise.
+- `actor_gradient_both`: `1.0` for the DreamerV2 Eq. 6 style mixed objective,
+  `0.0` otherwise.
 - `actor_entropy`: actor entropy bonus term.
 - `critic_loss`: value regression loss on imagined features.
 - `imagined_reward_mean` and `imagined_continue_mean`: rollout-model
