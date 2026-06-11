@@ -296,6 +296,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--theta-y-bound", type=positive_float, default=None)
     parser.add_argument("--plot-window", type=int, default=150)
     parser.add_argument("--plot-pause", type=float, default=0.001)
+    parser.add_argument(
+        "--render-fps",
+        type=float,
+        default=120.0,
+        help="Interactive environment render refresh rate; does not change simulator dt.",
+    )
     parser.add_argument("--final-threshold", type=float, default=0.06)
     parser.add_argument("--last-window-threshold", type=float, default=0.08)
     parser.add_argument("--save-plots", action="store_true")
@@ -307,6 +313,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-steps must be positive")
     if args.plot_window <= 0:
         parser.error("--plot-window must be positive")
+    if args.render_fps <= 0.0:
+        parser.error("--render-fps must be positive")
     return args
 
 
@@ -332,7 +340,7 @@ def main() -> None:
     metrics: list[dict[str, float | bool]] = []
     episode_records: list[dict[str, float | bool | str]] = []
 
-    env = BallBalanceEnv(render_mode="human", config={"max_episode_steps": args.max_steps})
+    env = BallBalanceEnv(render_mode="human", config={"max_episode_steps": args.max_steps}, render_fps=args.render_fps)
     visualizer = SlidingWindowVisualizer(window=args.plot_window, pause_s=args.plot_pause)
     try:
         controller = RSSMMPCController(

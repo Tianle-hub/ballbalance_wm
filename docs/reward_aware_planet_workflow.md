@@ -250,7 +250,8 @@ python scripts/online_mpc_visualizer.py \
   --num-episodes 5 \
   --max-steps 150 \
   --planning-objective reward \
-  --planner-type cem_gd
+  --planner-type cem_gd \
+  --render-fps 120
 ```
 
 To compare center-stabilization methods from identical random initial states, run the full baseline comparison:

@@ -58,10 +58,13 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         self,
         render_mode: str | None = None,
         config: BallBalanceConfig | dict[str, Any] | None = None,
+        render_fps: float | None = None,
     ) -> None:
         super().__init__()
         if render_mode not in self.metadata["render_modes"]:
             raise ValueError(f"Unsupported render_mode {render_mode!r}")
+        if render_fps is not None and render_fps <= 0.0:
+            raise ValueError("render_fps must be positive")
 
         self.config = BallBalanceConfig.from_config(config)
         if self.config.dt <= 0.0:
@@ -74,6 +77,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             raise ValueError("max_episode_steps must be positive")
 
         self.render_mode = render_mode
+        self.render_fps = float(render_fps if render_fps is not None else self.metadata["render_fps"])
         self.state = np.zeros(6, dtype=np.float64)
         self.step_count = 0
 
@@ -98,8 +102,10 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self._fig = None
         self._ax = None
+        self._trajectory_artist = None
         self._ball_artist = None
         self._board_artist = None
+        self._trajectory_xy: list[np.ndarray] = []
 
     def reset(
         self,
@@ -120,6 +126,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             self.state = np.array([x, y, vx, vy, 0.0, 0.0], dtype=np.float64)
 
         obs = self._get_obs()
+        self._trajectory_xy = [self.state[:2].copy()]
         info = self._make_info(
             acceleration=np.zeros(2, dtype=np.float32),
             action_clipped=np.zeros(2, dtype=np.float32),
@@ -131,6 +138,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         if state.shape != (6,):
             raise ValueError("state must have shape (6,)")
         self.state = state.copy()
+        self._trajectory_xy = [self.state[:2].copy()]
 
     def step(
         self,
@@ -156,6 +164,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         x += vx * cfg.dt
         y += vy * cfg.dt
         self.state = np.array([x, y, vx, vy, theta_x, theta_y], dtype=np.float64)
+        self._trajectory_xy.append(self.state[:2].copy())
 
         self.step_count += 1
         fallen = abs(x) > cfg.board_size / 2.0 or abs(y) > cfg.board_size / 2.0
@@ -189,8 +198,13 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         assert self._fig is not None
         assert self._ax is not None
         assert self._ball_artist is not None
+        assert self._trajectory_artist is not None
 
         x, y = self.state[:2]
+        if not self._trajectory_xy:
+            self._trajectory_xy.append(self.state[:2].copy())
+        trajectory = np.asarray(self._trajectory_xy, dtype=np.float64)
+        self._trajectory_artist.set_data(trajectory[:, 0], trajectory[:, 1])
         self._ball_artist.set_data([x], [y])
         self._ax.set_title(f"step={self.step_count}  x={x:+.3f}  y={y:+.3f}")
         self._fig.canvas.draw()
@@ -198,7 +212,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         if self.render_mode == "human":
             import matplotlib.pyplot as plt
 
-            plt.pause(self.config.dt)
+            plt.pause(1.0 / self.render_fps)
             return None
 
         if self.render_mode == "rgb_array":
@@ -214,6 +228,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
             plt.close(self._fig)
         self._fig = None
         self._ax = None
+        self._trajectory_artist = None
         self._ball_artist = None
         self._board_artist = None
 
@@ -249,7 +264,8 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
 
         half = self.config.board_size / 2.0
         board = ax.add_patch(_rectangle_patch((-half, -half), self.config.board_size, self.config.board_size))
-        (ball,) = ax.plot([], [], "o", color="tab:red", markersize=12)
+        (trajectory,) = ax.plot([], [], color="black", linewidth=1.6, alpha=0.85, zorder=2)
+        (ball,) = ax.plot([], [], "o", color="tab:red", markersize=12, zorder=3)
         ax.axhline(0.0, color="0.85", linewidth=1)
         ax.axvline(0.0, color="0.85", linewidth=1)
         ax.set_xlim(-half * 1.15, half * 1.15)
@@ -262,6 +278,7 @@ class BallBalanceEnv(gym.Env[np.ndarray, np.ndarray]):
         self._fig = fig
         self._ax = ax
         self._board_artist = board
+        self._trajectory_artist = trajectory
         self._ball_artist = ball
 
 
