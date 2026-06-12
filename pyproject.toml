@@ -20,6 +20,11 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+dm-control = [
+    "dm-control>=1.0.31",
+    "imageio>=2.31",
+    "mujoco>=3.8.1,<3.9",
+]
 
 [tool.setuptools.packages.find]
 include = ["ball_rssm*"]

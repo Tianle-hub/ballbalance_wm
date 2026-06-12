@@ -12,6 +12,18 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+Optional DM-Control support:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv venv --python /usr/bin/python3.12 .venv-dm-control
+UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv-dm-control/bin/python -e ".[dm-control]"
+.venv-dm-control/bin/python scripts/run_dm_control_env.py --domain cartpole --task swingup --steps 100
+```
+
+This workspace also has a ready local `.venv-dm-control` environment because the Python 3.13 `.venv` can make `labmaze` fall back to a Bazel source build.
+
+See [docs/dm_control.md](docs/dm_control.md) for the migration path from this low-dimensional Dreamer to DM-Control state and pixel observations.
+
 ## Environment
 
 `BallBalanceEnv` follows the Gymnasium terminated/truncated API.
