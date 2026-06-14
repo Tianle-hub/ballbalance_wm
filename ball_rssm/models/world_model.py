@@ -118,12 +118,17 @@ class WorldModel(nn.Module):
     def feature_dim(self) -> int:
         return self.config.feature_dim
 
-    def forward(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
+    def forward(
+        self,
+        obs_seq: torch.Tensor,
+        action_seq: torch.Tensor,
+        is_first_seq: torch.Tensor | None = None,
+    ) -> dict[str, object]:
         """Encode observations, run RSSM inference, and decode all prediction heads."""
 
         batch_size, obs_steps = obs_seq.shape[:2]
         embed = self.encode_obs(obs_seq).reshape(batch_size, obs_steps, -1)
-        rssm_out = self.rssm.observe(embed, action_seq)
+        rssm_out = self.rssm.observe(embed, action_seq, is_first_seq)
 
         posterior = rssm_out["posterior"]
         prior = rssm_out["prior"]
@@ -153,6 +158,7 @@ class WorldModel(nn.Module):
         reward_seq: torch.Tensor | None = None,
         done_seq: torch.Tensor | None = None,
         terminated_seq: torch.Tensor | None = None,
+        is_first_seq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute RSSM training loss and detached logging metrics.
 
@@ -161,7 +167,7 @@ class WorldModel(nn.Module):
         latents at indices 1..T.
         """
 
-        out = self.forward(obs_seq, action_seq)
+        out = self.forward(obs_seq, action_seq, is_first_seq)
         recon = out["recon"]
         reward_pred = out["reward_pred"]
         continuation_logit = out["continuation_logit"]
@@ -179,6 +185,7 @@ class WorldModel(nn.Module):
             action_seq=action_seq,
             done_seq=done_seq,
             terminated_seq=terminated_seq,
+            is_first_seq=is_first_seq,
         )
 
         recon_err = observation_mse(recon[:, 1:], obs_seq[:, 1:])
@@ -382,11 +389,12 @@ class WorldModel(nn.Module):
         prev_state: RSSMState,
         prev_action_norm: torch.Tensor,
         obs_norm: torch.Tensor,
+        is_first: torch.Tensor | None = None,
     ) -> RSSMState:
         """Assimilate one real observation into the current RSSM belief."""
 
         embed = self.encode_obs(obs_norm)
-        posterior, _, _, _ = self.rssm.obs_step(prev_state, prev_action_norm, embed)
+        posterior, _, _, _ = self.rssm.obs_step(prev_state, prev_action_norm, embed, is_first)
         return posterior
 
     def imagine_rollout(
@@ -517,6 +525,7 @@ def transition_masks(
     action_seq: torch.Tensor,
     done_seq: torch.Tensor | None,
     terminated_seq: torch.Tensor | None,
+    is_first_seq: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build masks for effective, nonterminal, terminal, and padded transitions."""
 
@@ -525,18 +534,29 @@ def transition_masks(
     if done_seq is None:
         effective = torch.ones(batch_size, action_steps, device=device, dtype=torch.bool)
         terminal = torch.zeros_like(effective)
-        return effective, effective, terminal, ~effective
-
-    done = done_seq.squeeze(-1).bool()
-    # A transition is effective if the previous transition did not already end
-    # the episode. This leaves the terminal transition itself trainable.
-    effective = torch.ones_like(done, dtype=torch.bool)
-    effective[:, 1:] = ~done[:, :-1]
-    post_done = ~effective
-    if terminated_seq is not None:
-        terminal = effective & terminated_seq.squeeze(-1).bool()
     else:
-        terminal = effective & done
+        done = done_seq.squeeze(-1).bool()
+        # A transition is effective if the previous transition did not already end
+        # the episode. This leaves the terminal transition itself trainable.
+        effective = torch.ones_like(done, dtype=torch.bool)
+        effective[:, 1:] = ~done[:, :-1]
+        if terminated_seq is not None:
+            terminal = terminated_seq.squeeze(-1).bool()
+        else:
+            terminal = done
+
+    if is_first_seq is not None:
+        if is_first_seq.shape[:2] != (batch_size, action_steps + 1):
+            raise ValueError("is_first_seq must have shape [batch, action_steps + 1, ...]")
+        reset_transition = is_first_seq[:, 1:].bool()
+        if reset_transition.ndim == 3 and reset_transition.shape[-1] == 1:
+            reset_transition = reset_transition.squeeze(-1)
+        elif reset_transition.ndim != 2:
+            reset_transition = reset_transition.reshape(batch_size, action_steps, -1).any(dim=-1)
+        effective = effective & ~reset_transition
+
+    terminal = terminal & effective
+    post_done = ~effective
     nonterminal = effective & ~terminal
     return effective, nonterminal, terminal, post_done
 

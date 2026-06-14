@@ -14,9 +14,17 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ball_rssm.buffer import Buffer, InitialStateBounds
-from ball_rssm.envs.dm_control import DMControlConfig, DMControlEnv, collect_random_dm_control
+from ball_rssm.buffer import InitialStateBounds
+from ball_rssm.envs.dm_control import (
+    DMControlConfig,
+    DMControlDriver,
+    DMControlEnv,
+    NormalizeActionWrapper,
+    collect_random_dm_control,
+)
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
+from ball_rssm.models.rssm import RSSMState
+from ball_rssm.stream_replay import StreamReplay
 from ball_rssm.trainer import DreamerTrainConfig, Trainer
 from ball_rssm.utils.checkpoint import load_checkpoint
 from ball_rssm.utils.seed import set_seed
@@ -57,104 +65,48 @@ class DMControlTrainer(Trainer):
         if max_episode_steps != self.buffer.max_episode_steps:
             raise ValueError("collector max_episode_steps must match replay buffer")
 
-        env = DMControlEnv(self.dm_config, seed=seed)
-        rewards: list[float] = []
-        lengths: list[int] = []
+        env = NormalizeActionWrapper(DMControlEnv(self.dm_config, seed=seed))
+        driver = DMControlDriver(env, self.buffer, max_episode_steps=max_episode_steps)
         was_world_training = self.world_model.training
         was_actor_training = self.actor.training
         self.world_model.eval()
         self.actor.eval()
+        state: RSSMState | None = None
+        prev_action = np.zeros(env.action_shape, dtype=np.float32)
+
+        def policy(obs: np.ndarray, is_first: bool) -> np.ndarray:
+            nonlocal state, prev_action
+            if state is None or is_first:
+                state = self.world_model.initial_state(1, self.device)
+                prev_action = np.zeros(env.action_shape, dtype=np.float32)
+            assert state is not None
+            state = self._posterior_update_np(state, obs, prev_action, is_first=is_first)
+            with torch.no_grad():
+                action_norm = self._sample_actor_action_norm(state, exploration_noise)
+                action = self.normalizer.denormalize_action(action_norm).reshape(env.action_shape)
+            action_np = action.detach().cpu().numpy().astype(np.float32)
+            action_np = np.clip(action_np, env.action_low, env.action_high)
+            prev_action = action_np
+            return action_np
+
         try:
-            for episode in range(num_episodes):
-                episode_data, total_reward, length = self._rollout_dm_episode(
-                    env=env,
-                    exploration_noise=exploration_noise,
-                )
-                self.buffer.append_episode(**episode_data)
-                rewards.append(total_reward)
-                lengths.append(length)
+            driver_metrics = driver.run(policy, num_episodes)
         finally:
             env.close()
             self.world_model.train(was_world_training)
             self.actor.train(was_actor_training)
 
-        reward_array = np.asarray(rewards, dtype=np.float32)
-        length_array = np.asarray(lengths, dtype=np.float32)
         return {
-            "collect_avg_reward": float(reward_array.mean()),
-            "collect_max_reward": float(reward_array.max()),
-            "collect_min_reward": float(reward_array.min()),
-            "collect_avg_length": float(length_array.mean()),
+            "collect_avg_reward": driver_metrics["avg_reward"],
+            "collect_max_reward": driver_metrics["max_reward"],
+            "collect_min_reward": driver_metrics["min_reward"],
+            "collect_avg_length": driver_metrics["avg_length"],
             "collect_episodes": float(num_episodes),
             "replay_episodes": float(self.buffer.size),
             "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
             "exploration_noise": float(exploration_noise),
             "configured_exploration_noise": float(configured_exploration_noise),
         }
-
-    def _rollout_dm_episode(
-        self,
-        env: DMControlEnv,
-        exploration_noise: float,
-    ) -> tuple[dict[str, np.ndarray], float, int]:
-        obs = np.zeros_like(self.buffer.obs_buffer[0])
-        action = np.zeros_like(self.buffer.action_buffer[0])
-        reward = np.zeros_like(self.buffer.reward_buffer[0])
-        terminated_arr = np.zeros_like(self.buffer.terminated_buffer[0])
-        truncated_arr = np.zeros_like(self.buffer.truncated_buffer[0])
-        done_arr = np.zeros_like(self.buffer.done_buffer[0])
-
-        current_obs = env.reset()
-        obs[0] = current_obs
-        zero_action = np.zeros(env.action_shape, dtype=np.float32)
-        state = self.world_model.initial_state(1, self.device)
-        state = self._posterior_update_np(state, current_obs, zero_action)
-
-        total_reward = 0.0
-        length = 0
-        done = False
-        final_obs = current_obs.copy()
-        for step in range(self.buffer.max_episode_steps):
-            if done:
-                obs[step + 1] = final_obs
-                done_arr[step, 0] = True
-                truncated_arr[step, 0] = True
-                continue
-
-            with torch.no_grad():
-                action_norm = self._sample_actor_action_norm(state, exploration_noise)
-                action_real = self.normalizer.denormalize_action(action_norm).reshape(env.action_shape)
-            action_np = action_real.detach().cpu().numpy().astype(np.float32)
-            action_np = np.clip(action_np, env.action_low, env.action_high)
-            next_obs, step_reward, terminated, truncated, env_done = env.step(action_np)
-            reached_limit = step == self.buffer.max_episode_steps - 1 and not env_done
-            done = bool(env_done or reached_limit)
-            final_obs = next_obs.copy()
-
-            obs[step + 1] = next_obs
-            action[step] = action_np.reshape(action[step].shape)
-            reward[step, 0] = step_reward
-            terminated_arr[step, 0] = terminated
-            truncated_arr[step, 0] = bool(truncated or reached_limit)
-            done_arr[step, 0] = done
-            total_reward += float(step_reward)
-            length = step + 1
-
-            if not done:
-                state = self._posterior_update_np(state, next_obs, action_np)
-
-        return (
-            {
-                "obs": obs,
-                "action": action,
-                "reward": reward,
-                "terminated": terminated_arr,
-                "truncated": truncated_arr,
-                "done": done_arr,
-            },
-            total_reward,
-            length,
-        )
 
 
 def main() -> None:
@@ -227,12 +179,16 @@ def main() -> None:
         mujoco_gl=args.mujoco_gl,
     )
 
+    capacity_steps = max(args.buffer_episodes * (args.max_episode_steps + 1), 1)
     replay_resume_path = run_dir / "replay" / "latest.npz"
     if args.dataset is None and args.resume and replay_resume_path.exists():
-        seed_buffer = Buffer.load(replay_resume_path)
-        print(f"resuming DM-Control replay from {replay_resume_path} with {seed_buffer.size} episodes")
+        buffer = StreamReplay.load(replay_resume_path, capacity_steps=capacity_steps)
+        print(
+            f"resuming DM-Control replay from {replay_resume_path} "
+            f"with {buffer.size} episodes and {buffer.num_steps} transitions"
+        )
     elif args.dataset is not None:
-        seed_buffer = Buffer.load(args.dataset)
+        buffer = StreamReplay.load(args.dataset, capacity_steps=capacity_steps)
     else:
         arrays = collect_random_dm_control(
             config=dm_config,
@@ -240,30 +196,38 @@ def main() -> None:
             max_episode_steps=args.max_episode_steps,
             seed=args.seed,
         )
-        seed_buffer = buffer_from_arrays(arrays)
+        buffer = StreamReplay.from_arrays(
+            arrays,
+            capacity_steps=capacity_steps,
+            max_episode_steps=args.max_episode_steps,
+            metadata={"action_normalization": "dm_control_normalized"},
+        )
 
-    if seed_buffer.max_episode_steps != args.max_episode_steps:
-        args.max_episode_steps = seed_buffer.max_episode_steps
-    buffer = Buffer.empty(
-        capacity_episodes=max(args.buffer_episodes, seed_buffer.size),
-        max_episode_steps=seed_buffer.max_episode_steps,
-        obs_shape=tuple(seed_buffer.obs_buffer.shape[2:]),
-        action_shape=tuple(seed_buffer.action_buffer.shape[2:]),
+    if buffer.max_episode_steps != args.max_episode_steps:
+        args.max_episode_steps = buffer.max_episode_steps
+    if buffer.action_low is None:
+        action_low = -np.ones(buffer.action_shape, dtype=np.float32)
+    else:
+        action_low = buffer.action_low.astype(np.float32)
+    if buffer.action_high is None:
+        action_high = np.ones(buffer.action_shape, dtype=np.float32)
+    else:
+        action_high = buffer.action_high.astype(np.float32)
+    action_bounds = (action_low, action_high)
+
+    print(
+        f"DM-Control replay ready: episodes={buffer.size}, transitions={buffer.num_steps}, "
+        f"obs_shape={buffer.obs_shape}, action_shape={buffer.action_shape}"
     )
-    buffer.append_buffer(seed_buffer)
 
     train_ds = buffer.sequence_dataset(args.seq_len, split="train", val_fraction=args.val_fraction, seed=args.seed)
     train_obs, train_action, train_reward = train_ds.selected_arrays()
-    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
+    # DM-Control actions are already stored in the wrapper's [-1, 1] coordinate
+    # system, matching Danijar's normalized action wrappers.
+    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward, normalize_action=False)
     obs_shape = tuple(int(dim) for dim in train_obs.shape[2:])
     action_dim = int(train_action.shape[-1])
     world_obs_type = "pixel" if args.obs_type == "pixel" else "vector"
-
-    probe = DMControlEnv(dm_config, seed=args.seed)
-    try:
-        action_bounds = (probe.action_low, probe.action_high)
-    finally:
-        probe.close()
 
     resume_path = find_resume_checkpoint(run_dir, args.resume_from) if args.resume else None
     checkpoint: dict[str, Any] | None = load_checkpoint(resume_path, device) if resume_path is not None else None
@@ -348,6 +312,12 @@ def main() -> None:
     config_dict = {
         **vars(args),
         "dm_control": dm_config.to_dict(),
+        "replay": {
+            "type": "step_stream",
+            "action_normalization": "dm_control_normalized",
+            "capacity_steps": buffer.capacity_steps,
+            "num_steps": buffer.num_steps,
+        },
         "world_model": world_config.to_dict(),
         "actor": actor_config.to_dict(),
         "critic": critic_config.to_dict(),
@@ -384,24 +354,6 @@ def main() -> None:
         start_iteration=start_epoch,
         best_val_loss=best_val_loss,
     )
-
-
-def buffer_from_arrays(arrays: dict[str, np.ndarray]) -> Buffer:
-    action = arrays["action"]
-    buffer = Buffer(
-        num_episodes=action.shape[0],
-        max_episode_steps=action.shape[1],
-        obs_shape=tuple(arrays["obs"].shape[2:]),
-        action_shape=tuple(action.shape[2:]),
-    )
-    buffer.obs_buffer = arrays["obs"].astype(np.float32)
-    buffer.action_buffer = action.astype(np.float32)
-    buffer.reward_buffer = arrays["reward"].astype(np.float32)
-    buffer.terminated_buffer = arrays["terminated"].astype(bool)
-    buffer.truncated_buffer = arrays["truncated"].astype(bool)
-    buffer.done_buffer = arrays["done"].astype(bool)
-    buffer.size = action.shape[0]
-    return buffer
 
 
 if __name__ == "__main__":

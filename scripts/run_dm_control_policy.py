@@ -13,7 +13,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ball_rssm.envs.dm_control import DMControlConfig, DMControlEnv
+from ball_rssm.envs.dm_control import DMControlConfig, DMControlEnv, NormalizeActionWrapper
 from ball_rssm.models import Actor, ActorConfig, Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.models.rssm import RSSMState
 from ball_rssm.utils.checkpoint import load_checkpoint
@@ -61,7 +61,7 @@ class DMControlPolicy:
         self.state = self.world_model.initial_state(1, self.device)
         self.prev_action = np.zeros(self.action_dim, dtype=np.float32)
         self.needs_update = False
-        self.state = self._posterior_update(initial_obs, self.prev_action)
+        self.state = self._posterior_update(initial_obs, self.prev_action, is_first=True)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
         if self.state is None:
@@ -80,17 +80,19 @@ class DMControlPolicy:
         self.needs_update = True
         return action.reshape(self.action_shape)
 
-    def _posterior_update(self, obs: np.ndarray, prev_action: np.ndarray) -> RSSMState:
+    def _posterior_update(self, obs: np.ndarray, prev_action: np.ndarray, is_first: bool = False) -> RSSMState:
         assert self.state is not None
         obs_shape = self.world_model.config.obs_shape
         if obs_shape is None:
             raise ValueError("world model config does not define obs_shape")
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, *obs_shape)
         action_t = torch.as_tensor(prev_action, dtype=torch.float32, device=self.device).reshape(1, -1)
+        is_first_t = torch.as_tensor([is_first], dtype=torch.float32, device=self.device)
         return self.world_model.posterior_update(
             self.state,
             self.normalizer.normalize_action(action_t),
             self.normalizer.normalize_obs(obs_t),
+            is_first_t,
         )
 
 
@@ -142,7 +144,7 @@ def main() -> None:
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     checkpoint = load_checkpoint(args.checkpoint, device)
     dm_config = infer_dm_config(checkpoint, args)
-    env = DMControlEnv(dm_config, seed=args.seed)
+    env = NormalizeActionWrapper(DMControlEnv(dm_config, seed=args.seed))
     policy = DMControlPolicy(
         checkpoint_path=args.checkpoint,
         action_low=env.action_low,

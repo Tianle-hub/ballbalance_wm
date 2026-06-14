@@ -273,9 +273,23 @@ class Trainer:
             reward = self.normalizer.normalize_reward(batch["reward"]) if "reward" in batch else None
 
             if train:
-                metrics = self.train_batch(obs, action, reward, batch.get("done"), batch.get("terminated"))
+                metrics = self.train_batch(
+                    obs,
+                    action,
+                    reward,
+                    batch.get("done"),
+                    batch.get("terminated"),
+                    batch.get("is_first"),
+                )
             else:
-                metrics = self.evaluate_batch(obs, action, reward, batch.get("done"), batch.get("terminated"))
+                metrics = self.evaluate_batch(
+                    obs,
+                    action,
+                    reward,
+                    batch.get("done"),
+                    batch.get("terminated"),
+                    batch.get("is_first"),
+                )
 
             batch_size = obs.shape[0]
             count += batch_size
@@ -307,7 +321,14 @@ class Trainer:
             obs = self.normalizer.normalize_obs(batch["obs"])
             action = self.normalizer.normalize_action(batch["action"])
             reward = self.normalizer.normalize_reward(batch["reward"]) if "reward" in batch else None
-            metrics = self.train_batch(obs, action, reward, batch.get("done"), batch.get("terminated"))
+            metrics = self.train_batch(
+                obs,
+                action,
+                reward,
+                batch.get("done"),
+                batch.get("terminated"),
+                batch.get("is_first"),
+            )
 
             current_batch_size = obs.shape[0]
             count += current_batch_size
@@ -322,13 +343,14 @@ class Trainer:
         reward: torch.Tensor | None,
         done: torch.Tensor | None,
         terminated: torch.Tensor | None,
+        is_first: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         self.world_optimizer.zero_grad(set_to_none=True)
 
         # TODO: I wonder whether it is common technique to first update the world model paras, and then update actor, and critic
         # First update the RSSM and prediction heads on real replay sequences,
         # then use the updated model to create starts for Dreamer behavior.
-        world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated)
+        world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated, is_first)
         world_loss.backward()
         world_grad = torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.config.grad_clip)
         self.world_optimizer.step()
@@ -336,7 +358,7 @@ class Trainer:
         with torch.no_grad():
             # Dreamer starts actor/value imagination from posterior RSSM states.
             # PlaNet would stop here and use the frozen model in a CEM controller.
-            posterior = self.world_model.forward(obs, action)["posterior"]
+            posterior = self.world_model.forward(obs, action, is_first)["posterior"]
             assert isinstance(posterior, dict)
             full_start = flatten_state_sequence(posterior, drop_last=True)
             start = sample_state_batch(full_start, self.config.behavior_batch_size)
@@ -373,9 +395,10 @@ class Trainer:
         reward: torch.Tensor | None,
         done: torch.Tensor | None,
         terminated: torch.Tensor | None,
+        is_first: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated)
-        posterior = self.world_model.forward(obs, action)["posterior"]
+        world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated, is_first)
+        posterior = self.world_model.forward(obs, action, is_first)["posterior"]
         assert isinstance(posterior, dict)
         full_start = flatten_state_sequence(posterior, drop_last=True)
         start = sample_state_batch(full_start, self.config.behavior_batch_size)
@@ -659,7 +682,13 @@ class Trainer:
             length,
         )
 
-    def _posterior_update_np(self, state: RSSMState, obs: np.ndarray, action: np.ndarray) -> RSSMState:
+    def _posterior_update_np(
+        self,
+        state: RSSMState,
+        obs: np.ndarray,
+        action: np.ndarray,
+        is_first: bool = False,
+    ) -> RSSMState:
         obs_shape = self.world_model.config.obs_shape
         if obs_shape is None:
             raise ValueError("world model config does not define obs_shape")
@@ -669,6 +698,7 @@ class Trainer:
             state,
             self.normalizer.normalize_action(action_t),
             self.normalizer.normalize_obs(obs_t),
+            torch.as_tensor([is_first], device=self.device, dtype=torch.float32),
         )
 
     def _sample_actor_action_norm(self, state: RSSMState, exploration_noise: float) -> torch.Tensor:

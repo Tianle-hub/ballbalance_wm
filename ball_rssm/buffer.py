@@ -70,6 +70,8 @@ class Buffer:
         self.terminated_buffer = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
         self.truncated_buffer = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
         self.done_buffer = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
+        self.is_first_buffer = np.zeros((num_episodes, max_episode_steps + 1, 1), dtype=bool)
+        self.is_first_buffer[:, 0, 0] = True
         self.initial_bounds = np.zeros(3, dtype=np.float32)
 
     @classmethod
@@ -123,6 +125,11 @@ class Buffer:
             done = arrays["done"].astype(bool) if "done" in arrays else np.zeros((*action.shape[:2], 1), dtype=bool)
             terminated = arrays["terminated"].astype(bool) if "terminated" in arrays else done.copy()
             truncated = arrays["truncated"].astype(bool) if "truncated" in arrays else np.zeros_like(done, dtype=bool)
+            if "is_first" in arrays:
+                is_first = arrays["is_first"].astype(bool)
+            else:
+                is_first = np.zeros((*obs.shape[:2], 1), dtype=bool)
+                is_first[:, 0, 0] = True
             initial_bounds = arrays["initial_bounds"].astype(np.float32) if "initial_bounds" in arrays else None
 
         buffer = cls(
@@ -137,6 +144,7 @@ class Buffer:
         buffer.terminated_buffer = terminated
         buffer.truncated_buffer = truncated
         buffer.done_buffer = done
+        buffer.is_first_buffer = is_first
         if initial_bounds is not None:
             buffer.initial_bounds = initial_bounds
         buffer.size = obs.shape[0]
@@ -186,6 +194,7 @@ class Buffer:
             "terminated": self.terminated_buffer[episode_slice],
             "truncated": self.truncated_buffer[episode_slice],
             "done": self.done_buffer[episode_slice],
+            "is_first": self.is_first_buffer[episode_slice],
             "initial_bounds": self.initial_bounds,
         }
 
@@ -229,6 +238,7 @@ class Buffer:
                 terminated=other.terminated_buffer[episode],
                 truncated=other.truncated_buffer[episode],
                 done=other.done_buffer[episode],
+                is_first=other.is_first_buffer[episode],
             )
         self.initial_bounds = other.initial_bounds.copy()
 
@@ -240,10 +250,14 @@ class Buffer:
         terminated: np.ndarray,
         truncated: np.ndarray,
         done: np.ndarray,
+        is_first: np.ndarray | None = None,
     ) -> int:
         """Append one episode, rotating over the oldest slot when capacity is full."""
 
-        self._validate_episode_arrays(obs, action, reward, terminated, truncated, done)
+        if is_first is None:
+            is_first = np.zeros((*obs.shape[:1], 1), dtype=bool)
+            is_first[0, 0] = True
+        self._validate_episode_arrays(obs, action, reward, terminated, truncated, done, is_first)
         if self.size < self.capacity:
             slot = self.size
             self.size += 1
@@ -257,6 +271,7 @@ class Buffer:
         self.terminated_buffer[slot] = terminated.astype(bool, copy=False)
         self.truncated_buffer[slot] = truncated.astype(bool, copy=False)
         self.done_buffer[slot] = done.astype(bool, copy=False)
+        self.is_first_buffer[slot] = is_first.astype(bool, copy=False)
         return slot
 
     def _validate_episode_arrays(
@@ -267,6 +282,7 @@ class Buffer:
         terminated: np.ndarray,
         truncated: np.ndarray,
         done: np.ndarray,
+        is_first: np.ndarray,
     ) -> None:
         expected_obs_shape = self.obs_buffer.shape[1:]
         expected_action_shape = self.action_buffer.shape[1:]
@@ -280,6 +296,8 @@ class Buffer:
         for name, array in {"terminated": terminated, "truncated": truncated, "done": done}.items():
             if array.shape != expected_reward_shape:
                 raise ValueError(f"{name} episode must have shape {expected_reward_shape}")
+        if is_first.shape != self.is_first_buffer.shape[1:]:
+            raise ValueError(f"is_first episode must have shape {self.is_first_buffer.shape[1:]}")
 
     def _collect_episode(
         self,
@@ -295,6 +313,7 @@ class Buffer:
         episode_mode = choose_episode_mode(mode, rng)
         obs, _ = env.reset(seed=seed + episode, options={"state": sample_initial_state(rng, initial_bounds)})
         self.obs_buffer[episode, 0] = obs
+        self.is_first_buffer[episode, 0, 0] = True
 
         action = np.zeros(env.action_space.shape, dtype=np.float32)
         target = np.zeros(2, dtype=np.float32)

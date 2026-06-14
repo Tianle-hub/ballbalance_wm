@@ -9,6 +9,8 @@ PyTorch Dreamer implementation for DeepMind Control Suite tasks. The same code s
 
 The original ball-balance environment is still available, but this branch is oriented around DM-Control.
 
+DM-Control training uses a driver-style online loop: actions are sampled in `[-1, 1]`, mapped to the real DM-Control action spec by a wrapper, written into a step-stream replay with `is_first` reset markers, and sampled as contiguous sequence windows for RSSM training.
+
 ## Install
 
 Use Python 3.12 for DM-Control in this workspace. The existing Python 3.13 `.venv` can make `labmaze` fall back to a Bazel source build.
@@ -94,7 +96,7 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
 
 ## Pixel Training
 
-Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. The replay shape is `[episode, time, channels, height, width]`.
+Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. In stream replay, image observations are stored as `[1, stream_time, channels, height, width]` with `is_first` markers at episode boundaries.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -162,18 +164,21 @@ For debugging offline world-model training or inspecting dataset shapes:
   --out data/dmc_walker_walk_random_state.npz
 ```
 
-Then train from that replay with the generic offline trainer:
+Then train from that replay with the DM-Control trainer:
 
 ```bash
-.venv-dm-control/bin/python scripts/train_dreamer.py \
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
   --dataset data/dmc_walker_walk_random_state.npz \
   --run-dir runs/dmc_walker_walk_offline_v1 \
-  --train-mode offline \
-  --obs-type auto \
+  --domain walker \
+  --task walk \
+  --obs-type state \
   --dreamer-version v1 \
+  --online-iterations 50 \
+  --update-steps 100 \
+  --collect-episodes 0 \
   --seq-len 50 \
-  --batch-size 128 \
-  --epochs 50
+  --batch-size 128
 ```
 
 ## Implementation Notes

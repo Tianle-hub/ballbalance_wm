@@ -6,6 +6,7 @@ import torch
 from ball_rssm.data.sequence_dataset import SequenceDataset
 from ball_rssm.buffer import Buffer
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
+from ball_rssm.stream_replay import StreamReplay
 from scripts.collect_dataset import InitialStateBounds, collect_dataset, save_dataset
 
 
@@ -67,6 +68,51 @@ def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
     assert sample["action"].shape == (6, 2)
     assert sample["terminated"].shape == (6, 1)
     assert sample["truncated"].shape == (6, 1)
+
+
+def test_stream_replay_saves_is_first_step_stream(tmp_path) -> None:
+    replay = StreamReplay(
+        capacity_steps=10,
+        obs_shape=(3,),
+        action_shape=(2,),
+        max_episode_steps=4,
+        action_low=-np.ones(2, dtype=np.float32),
+        action_high=np.ones(2, dtype=np.float32),
+    )
+    replay.start_episode(np.array([0.0, 0.1, 0.2], dtype=np.float32))
+    replay.add_transition(
+        action=np.array([0.5, -0.5], dtype=np.float32),
+        reward=1.0,
+        terminated=False,
+        truncated=False,
+        done=False,
+        next_obs=np.array([0.2, 0.3, 0.4], dtype=np.float32),
+    )
+    replay.start_episode(np.array([1.0, 1.1, 1.2], dtype=np.float32))
+    replay.add_transition(
+        action=np.array([-0.25, 0.25], dtype=np.float32),
+        reward=0.5,
+        terminated=True,
+        truncated=False,
+        done=True,
+        next_obs=np.array([1.2, 1.3, 1.4], dtype=np.float32),
+    )
+
+    path = tmp_path / "stream_replay.npz"
+    replay.save(path)
+    loaded = StreamReplay.load(path)
+    dataset = loaded.sequence_dataset(seq_len=2, split="all")
+    sample = dataset[0]
+
+    arrays = loaded.to_dataset()
+    assert loaded.size == 2
+    assert loaded.num_steps == 3
+    assert arrays["obs"].shape == (1, 4, 3)
+    assert arrays["action"].shape == (1, 3, 2)
+    assert arrays["is_first"].shape == (1, 4, 1)
+    assert arrays["is_first"][0, 0, 0]
+    assert arrays["is_first"][0, 2, 0]
+    assert sample["is_first"].shape == (3, 1)
 
 
 def test_coverage_collection_can_feed_dreamer_world_model_training(tmp_path) -> None:

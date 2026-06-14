@@ -29,18 +29,27 @@ The V2 KL path includes a dynamics/representation split controlled by `kl_alpha`
 
 Danijar's implementations use driver-style online interaction, action repeats, action normalization wrappers, `is_first` episode reset flags, and replay sampling around step streams.
 
-This repo uses an episode-major NPZ replay buffer:
+The DM-Control path now follows that shape more closely:
 
 ```text
-obs:        [episodes, T + 1, ...]
-action:     [episodes, T, action_dim]
-reward:     [episodes, T, 1]
-terminated: [episodes, T, 1]
-truncated:  [episodes, T, 1]
-done:       [episodes, T, 1]
+DMControlDriver -> NormalizeActionWrapper -> StreamReplay -> SequenceDataset
 ```
 
-Potential issue: the RSSM does not receive an explicit `is_first` flag inside sequence windows. It starts each sampled window from a zero state and masks losses after `done`, but it does not reset hidden state mid-window the way Dreamer V2's `obs_step(..., is_first, ...)` does.
+DM-Control actions are stored in normalized `[-1, 1]` coordinates. `StreamReplay` stores one continuous step stream:
+
+```text
+obs:        [1, stream_steps + 1, ...]
+action:     [1, stream_steps, action_dim]
+reward:     [1, stream_steps, 1]
+terminated: [1, stream_steps, 1]
+truncated:  [1, stream_steps, 1]
+done:       [1, stream_steps, 1]
+is_first:   [1, stream_steps + 1, 1]
+```
+
+`RSSM.observe()` and one-step posterior updates now consume `is_first`, reset recurrent state at episode starts, and zero the reset action. The world-model loss masks transitions whose next observation is marked `is_first`, so dummy reset transitions are not trained as dynamics.
+
+Remaining difference: the local replay sampler is still a simple fixed-window PyTorch dataset over a single stream. The reference replay stack has richer prefetching, dataset workers, logging, and exact config-driven sampling behavior.
 
 ### Observation Preprocessing
 
@@ -49,6 +58,7 @@ Dreamer V2 preprocesses `uint8` images as:
 ```text
 image / 255.0 - 0.5
 ```
+Ask: is this also dreamerv1 style? 
 
 This repo's DM-Control adapter stores pixel replay as float images in `[0, 1]`, then `Normalizer` applies per-pixel mean/std normalization.
 
@@ -98,9 +108,9 @@ Potential issue: reward normalization plus MSE changes the scale used for imagin
 
 Danijar's DM-Control wrappers normalize bounded actions to `[-1, 1]`.
 
-This repo normalizes actions with replay mean/std, then stores environment action bounds in that normalized coordinate system for the actor. At execution, actions are denormalized and clipped to DM-Control bounds.
+The DM-Control path now matches this convention: `NormalizeActionWrapper` exposes `[-1, 1]` actions to collection, replay, actor training, and policy evaluation, then maps those actions back to the real DM-Control action spec before stepping the environment.
 
-Potential issue: exploration noise is applied in normalized-stat coordinates, not directly in `[-1, 1]` action coordinates. This can make noise scale task- and dataset-dependent.
+Remaining issue: the older ball-balance path still uses replay-stat action normalization. Some shared trainer code therefore has to support both conventions.
 
 ### Actor Gradient Modes
 
@@ -151,8 +161,7 @@ If training fails to improve:
 ## Highest-Priority Future Improvements
 
 1. Add exact Dreamer-style image preprocessing option: `image / 255.0 - 0.5` without per-pixel mean/std normalization.
-2. Add explicit `is_first` handling in RSSM sequence observation.
-3. Add V2 free-nats/free-avg controls.
-4. Add distributional decoder/reward/value heads instead of plain MSE heads.
-5. Add action normalization mode `[-1, 1]` for DM-Control actions to match the reference wrappers.
-6. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
+2. Add V2 free-nats/free-avg controls.
+3. Add distributional decoder/reward/value heads instead of plain MSE heads.
+4. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
+5. Add exact reference-style replay prefetching and dataset worker behavior.

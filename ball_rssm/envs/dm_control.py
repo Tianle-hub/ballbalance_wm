@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import numpy as np
+
+from ball_rssm.stream_replay import StreamReplay
 
 DMObsType = Literal["state", "pixel"]
 
@@ -110,6 +112,103 @@ class DMControlEnv:
         return flatten_observation(observation, self._obs_keys)
 
 
+class NormalizeActionWrapper:
+    """Wrap a continuous DM-Control env so policy actions live in [-1, 1]."""
+
+    def __init__(self, env: DMControlEnv) -> None:
+        self.env = env
+        self.config = env.config
+        self.obs_shape = env.obs_shape
+        self.action_shape = env.action_shape
+        self.real_action_low = env.action_low
+        self.real_action_high = env.action_high
+        self.action_low = -np.ones(env.action_shape, dtype=np.float32)
+        self.action_high = np.ones(env.action_shape, dtype=np.float32)
+
+    @property
+    def obs_keys(self) -> tuple[str, ...]:
+        return self.env.obs_keys
+
+    def reset(self) -> np.ndarray:
+        return self.env.reset()
+
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, bool]:
+        return self.env.step(self.denormalize_action(action))
+
+    def render(self) -> np.ndarray:
+        return self.env.render()
+
+    def sample_random_action(self, rng: np.random.Generator) -> np.ndarray:
+        return rng.uniform(self.action_low, self.action_high).astype(np.float32)
+
+    def close(self) -> None:
+        self.env.close()
+
+    def denormalize_action(self, action: np.ndarray) -> np.ndarray:
+        action = np.asarray(action, dtype=np.float32).reshape(self.action_shape)
+        action = np.clip(action, self.action_low, self.action_high)
+        return self.real_action_low + 0.5 * (action + 1.0) * (self.real_action_high - self.real_action_low)
+
+
+class DMControlDriver:
+    """Run online DM-Control interaction and append transitions to stream replay."""
+
+    def __init__(
+        self,
+        env: DMControlEnv | NormalizeActionWrapper,
+        replay: StreamReplay,
+        max_episode_steps: int,
+    ) -> None:
+        self.env = env
+        self.replay = replay
+        self.max_episode_steps = max_episode_steps
+
+    def run(
+        self,
+        policy: Callable[[np.ndarray, bool], np.ndarray],
+        num_episodes: int,
+    ) -> dict[str, float]:
+        rewards: list[float] = []
+        lengths: list[int] = []
+        for _ in range(num_episodes):
+            obs = self.env.reset()
+            self.replay.start_episode(obs)
+            total_reward = 0.0
+            length = 0
+            done = False
+            is_first = True
+            for step in range(self.max_episode_steps):
+                action = np.asarray(policy(obs, is_first), dtype=np.float32).reshape(self.env.action_shape)
+                next_obs, reward, terminated, truncated, env_done = self.env.step(action)
+                reached_limit = step == self.max_episode_steps - 1 and not env_done
+                done = bool(env_done or reached_limit)
+                self.replay.add_transition(
+                    action=action,
+                    reward=reward,
+                    terminated=terminated,
+                    truncated=bool(truncated or reached_limit),
+                    done=done,
+                    next_obs=next_obs,
+                )
+                total_reward += float(reward)
+                length = step + 1
+                obs = next_obs
+                is_first = False
+                if done:
+                    break
+            rewards.append(total_reward)
+            lengths.append(length)
+        reward_array = np.asarray(rewards, dtype=np.float32)
+        length_array = np.asarray(lengths, dtype=np.float32)
+        return {
+            "avg_reward": float(reward_array.mean()) if rewards else float("nan"),
+            "max_reward": float(reward_array.max()) if rewards else float("nan"),
+            "min_reward": float(reward_array.min()) if rewards else float("nan"),
+            "avg_length": float(length_array.mean()) if lengths else float("nan"),
+            "episodes": float(num_episodes),
+        }
+
+
 def flatten_observation(observation: dict[str, np.ndarray], keys: tuple[str, ...]) -> np.ndarray:
     parts = [np.asarray(observation[key], dtype=np.float32).reshape(-1) for key in keys]
     return np.concatenate(parts, axis=0).astype(np.float32)
@@ -128,52 +227,36 @@ def collect_random_dm_control(
     if max_episode_steps <= 0:
         raise ValueError("max_episode_steps must be positive")
 
-    env = DMControlEnv(config, seed=seed)
+    base_env = DMControlEnv(config, seed=seed)
+    env = NormalizeActionWrapper(base_env)
     rng = np.random.default_rng(seed)
-    obs = np.zeros((num_episodes, max_episode_steps + 1, *env.obs_shape), dtype=np.float32)
-    action = np.zeros((num_episodes, max_episode_steps, *env.action_shape), dtype=np.float32)
-    reward = np.zeros((num_episodes, max_episode_steps, 1), dtype=np.float32)
-    terminated = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
-    truncated = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
-    done = np.zeros((num_episodes, max_episode_steps, 1), dtype=bool)
+    replay = StreamReplay(
+        capacity_steps=max(num_episodes * (max_episode_steps + 1), 1),
+        obs_shape=env.obs_shape,
+        action_shape=env.action_shape,
+        max_episode_steps=max_episode_steps,
+        action_low=env.action_low,
+        action_high=env.action_high,
+        metadata={
+            "action_normalization": "dm_control_normalized",
+            "real_action_low": env.real_action_low,
+            "real_action_high": env.real_action_high,
+        },
+    )
+    driver = DMControlDriver(env, replay, max_episode_steps=max_episode_steps)
 
     try:
-        for episode in range(num_episodes):
-            current_obs = env.reset()
-            obs[episode, 0] = current_obs
-            final_obs = current_obs
-            episode_done = False
-            for step in range(max_episode_steps):
-                if episode_done:
-                    obs[episode, step + 1] = final_obs
-                    done[episode, step, 0] = True
-                    truncated[episode, step, 0] = True
-                    continue
-
-                action_np = env.sample_random_action(rng)
-                next_obs, step_reward, term, trunc, env_done = env.step(action_np)
-                reached_limit = step == max_episode_steps - 1 and not env_done
-                episode_done = bool(env_done or reached_limit)
-
-                obs[episode, step + 1] = next_obs
-                action[episode, step] = action_np
-                reward[episode, step, 0] = step_reward
-                terminated[episode, step, 0] = term
-                truncated[episode, step, 0] = bool(trunc or reached_limit)
-                done[episode, step, 0] = episode_done
-                final_obs = next_obs
+        driver.run(lambda _obs, _is_first: env.sample_random_action(rng), num_episodes)
     finally:
         env.close()
 
     return {
-        "obs": obs,
-        "action": action,
-        "reward": reward,
-        "terminated": terminated,
-        "truncated": truncated,
-        "done": done,
+        **replay.to_dataset(),
         "action_low": env.action_low,
         "action_high": env.action_high,
+        "real_action_low": env.real_action_low,
+        "real_action_high": env.real_action_high,
+        "action_normalization": np.asarray("dm_control_normalized"),
         "obs_type": np.asarray(config.obs_type),
         "domain": np.asarray(config.domain),
         "task": np.asarray(config.task),

@@ -119,6 +119,36 @@ def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     assert torch.isfinite(metrics["continuation_prob_terminal"])
 
 
+def test_world_model_masks_is_first_reset_transitions() -> None:
+    batch_size = 2
+    seq_len = 5
+    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+    done_seq = torch.zeros(batch_size, seq_len, 1)
+    terminated_seq = torch.zeros(batch_size, seq_len, 1)
+    is_first_seq = torch.zeros(batch_size, seq_len + 1, 1)
+    is_first_seq[:, 0] = 1.0
+    is_first_seq[0, 3] = 1.0
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=32,
+            stoch_dim=8,
+            embed_dim=16,
+            hidden_dim=32,
+        )
+    )
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq, done_seq, terminated_seq, is_first_seq)
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["reward_loss"])
+    assert metrics["reward_effective_fraction"].item() < 1.0
+    assert metrics["reward_post_done_padding_fraction"].item() > 0.0
+
+
 def test_pixel_world_model_shapes_and_finite_loss() -> None:
     batch_size = 2
     seq_len = 3

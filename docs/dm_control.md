@@ -17,7 +17,8 @@ Adapter responsibilities:
 1. Convert the DM-Control timestep into Gymnasium-style pieces: `obs`, `reward`, `terminated`, `truncated`, `info`.
 2. Flatten the observation dictionary in a stable key order.
 3. Read `env.action_spec()` and expose a continuous action range for the actor.
-4. Store replay in the same NPZ layout used by `Buffer`: `obs`, `action`, `reward`, `terminated`, `truncated`, `done`.
+4. Normalize actions to `[-1, 1]` for the actor and replay, then map back to the real DM-Control action spec before stepping.
+5. Store replay as a step stream with `is_first` reset flags.
 
 For example, `cartpole/swingup` has vector observations, so the current `WorldModelConfig(obs_dim=<flat dim>, action_dim=<action dim>)` pattern still applies.
 
@@ -39,6 +40,8 @@ Implemented model changes:
 4. Pixel models use `ConvDecoder` to reconstruct image observations from Dreamer features.
 5. Reconstruction loss now reduces over all trailing observation dimensions, so vector and pixel observations both produce per-step MSE.
 6. Reward, continuation, actor, and critic heads still use MLPs over RSSM features.
+7. `RSSM.observe()` consumes `is_first` flags and resets hidden state at episode starts.
+8. DM-Control collection uses `DMControlDriver`, action repeat, normalized action wrappers, and `StreamReplay` step-stream sampling.
 
 Practical ConvEncoder shape:
 

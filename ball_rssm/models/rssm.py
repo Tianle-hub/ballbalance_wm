@@ -87,6 +87,7 @@ class RSSM(nn.Module):
         prev_state: RSSMState,
         action: torch.Tensor,
         embed: torch.Tensor,
+        is_first: torch.Tensor | None = None,
     ) -> tuple[RSSMState, RSSMState, Independent, Independent]:
         """Update one timestep with an observation embedding.
 
@@ -96,6 +97,9 @@ class RSSM(nn.Module):
 
         # Observation step: first build the action-conditioned prior, then infer z_t
         # from the prior memory and current observation embedding.
+        if is_first is not None:
+            prev_state = reset_state_where_first(prev_state, is_first)
+            action = action * not_first_mask(is_first, action)
         prior_state, prior_dist = self.img_step(prev_state, action)
         posterior_state, posterior_dist = self._state_from_params(
             prior_state.h,
@@ -104,10 +108,17 @@ class RSSM(nn.Module):
         )
         return posterior_state, prior_state, prior_dist, posterior_dist
 
-    def observe(self, embed_seq: torch.Tensor, action_seq: torch.Tensor) -> dict[str, object]:
+    def observe(
+        self,
+        embed_seq: torch.Tensor,
+        action_seq: torch.Tensor,
+        is_first_seq: torch.Tensor | None = None,
+    ) -> dict[str, object]:
         """Infer posterior/prior latent sequences for a full observation window."""
 
         batch_size, obs_steps, _ = embed_seq.shape
+        if is_first_seq is not None and is_first_seq.shape[:2] != embed_seq.shape[:2]:
+            raise ValueError("is_first_seq must share [batch, obs_steps] with embed_seq")
         device = embed_seq.device
         prev = self.init_state(batch_size, device)
         zero_action = torch.zeros(batch_size, self.action_dim, device=device, dtype=embed_seq.dtype)
@@ -120,7 +131,8 @@ class RSSM(nn.Module):
             # obs_seq has T+1 entries while action_seq has T. At t=0 there is
             # no previous action, so a zero action anchors the initial posterior.
             action = zero_action if t == 0 else action_seq[:, t - 1]
-            posterior, prior, prior_dist, posterior_dist = self.obs_step(prev, action, embed_seq[:, t])
+            is_first = None if is_first_seq is None else is_first_seq[:, t]
+            posterior, prior, prior_dist, posterior_dist = self.obs_step(prev, action, embed_seq[:, t], is_first)
             post_states.append(posterior)
             prior_states.append(prior)
             prior_dists.append(prior_dist)
@@ -223,6 +235,36 @@ def repeat_state(state: RSSMState, repeats: int) -> RSSMState:
         std=repeat_optional(state.std),
         logits=repeat_optional(state.logits),
     )
+
+
+def not_first_mask(is_first: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    mask = 1.0 - is_first.to(device=target.device, dtype=target.dtype)
+    while mask.ndim < target.ndim:
+        mask = mask.unsqueeze(-1)
+    return mask
+
+
+def reset_state_where_first(state: RSSMState, is_first: torch.Tensor) -> RSSMState:
+    """Zero RSSM state entries whose current observation starts an episode."""
+
+    def reset_optional(value: torch.Tensor | None) -> torch.Tensor | None:
+        if value is None:
+            return None
+        if value.dtype.is_floating_point:
+            return value * not_first_mask(is_first, value)
+        return value
+
+    reset = RSSMState(
+        h=state.h * not_first_mask(is_first, state.h),
+        z=state.z * not_first_mask(is_first, state.z),
+        mean=reset_optional(state.mean),
+        std=state.std if state.std is not None else None,
+        logits=reset_optional(state.logits),
+    )
+    if state.std is not None:
+        keep = not_first_mask(is_first, state.std)
+        reset.std = state.std * keep + (1.0 - keep)
+    return reset
 
 
 def stack_states(states: list[RSSMState]) -> dict[str, torch.Tensor]:
