@@ -109,7 +109,7 @@ Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and 
   --width 64 \
   --camera-id 0 \
   --mujoco-gl egl \
-  --run-dir runs/dmc_cartpole_swingup_pixel_v1 \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v1_0614 \
   --dreamer-version v1 \
   --seed-episodes 20 \
   --buffer-episodes 1000 \
@@ -118,11 +118,39 @@ Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and 
   --update-steps 100 \
   --collect-episodes 5 \
   --seq-len 50 \
-  --batch-size 32 \
+  --batch-size 128 \
   --imagination-horizon 15
 ```
 
 Pixel training is much heavier than state training. Use small `--batch-size` first.
+
+```bash
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --domain cartpole \
+  --task swingup \
+  --obs-type pixel \
+  --height 64 \
+  --width 64 \
+  --camera-id 0 \
+  --mujoco-gl egl \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v2_0614 \
+  --dreamer-version v2 \
+  --stoch-dim 16 \
+  --discrete-classes 32 \
+  --kl-balance 0.8 \
+  --kl-free 0.0 \
+  --kl-free-avg \
+  --seed-episodes 20 \
+  --buffer-episodes 1000 \
+  --max-episode-steps 200 \
+  --online-iterations 100 \
+  --update-steps 100 \
+  --collect-episodes 5 \
+  --seq-len 50 \
+  --batch-size 128 \
+  --imagination-horizon 15
+```
+
 
 ## Evaluate A Checkpoint
 
