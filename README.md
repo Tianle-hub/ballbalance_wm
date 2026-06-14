@@ -49,7 +49,7 @@ Start with state observations. This is the quickest way to verify the world mode
   --domain cartpole \
   --task swingup \
   --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v1 \
+  --run-dir runs/dmc_cartpole_swingup_v1_0614 \
   --dreamer-version v1 \
   --seed-episodes 20 \
   --buffer-episodes 2000 \
@@ -78,7 +78,7 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
   --domain cartpole \
   --task swingup \
   --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v2 \
+  --run-dir runs/dmc_cartpole_swingup_v2_0614 \
   --dreamer-version v2 \
   --stoch-dim 16 \
   --discrete-classes 32 \
