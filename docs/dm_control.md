@@ -42,6 +42,7 @@ Implemented model changes:
 6. Reward, continuation, actor, and critic heads still use MLPs over RSSM features.
 7. `RSSM.observe()` consumes `is_first` flags and resets hidden state at episode starts.
 8. DM-Control collection uses `DMControlDriver`, action repeat, normalized action wrappers, and `StreamReplay` step-stream sampling.
+9. Pixel replay stores rendered frames as `image / 255.0 - 0.5`, and DM-Control pixel training leaves observation normalization as identity.
 
 Practical ConvEncoder shape:
 

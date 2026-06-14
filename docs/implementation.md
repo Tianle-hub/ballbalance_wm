@@ -58,11 +58,12 @@ Dreamer V2 preprocesses `uint8` images as:
 ```text
 image / 255.0 - 0.5
 ```
-Ask: is this also dreamerv1 style? 
 
-This repo's DM-Control adapter stores pixel replay as float images in `[0, 1]`, then `Normalizer` applies per-pixel mean/std normalization.
+Dreamer V1 uses the same centered image scale. In the local reference, the V1 preprocessing path casts images to float, optionally reduces bit depth, divides by the image bins, adds uniform dequantization noise, then subtracts `0.5`. V2 uses the simpler deterministic `uint8 / 255.0 - 0.5`.
 
-Potential issue: per-pixel dataset normalization can work, but it differs from the reference and can make decoder scale and image likelihood behavior harder to compare directly.
+This repo's DM-Control pixel adapter now stores rendered frames as CHW float images in `[-0.5, 0.5]`, and `scripts/train_dm_control_dreamer.py` leaves pixel observations unnormalized by dataset mean/std. State observations still use dataset mean/std normalization.
+
+Remaining difference: the local path does not add Dreamer V1's optional image dequantization noise or bit-depth reduction; it matches the deterministic V2-style centering.
 
 ### Decoder And Reconstruction Loss
 
@@ -112,13 +113,13 @@ The DM-Control path now matches this convention: `NormalizeActionWrapper` expose
 
 Remaining issue: the older ball-balance path still uses replay-stat action normalization. Some shared trainer code therefore has to support both conventions.
 
-### Actor Gradient Modes
+### Actor Gradient Modes (Keep it)
 
 The local behavior training supports `dynamics`, `reinforce`, and `both`, with `auto` choosing dynamics for continuous actions.
 
 This is useful, but it is not an exact reproduction of all V1/V2 actor loss details. In particular, entropy terms, stop-gradient placement, and score-function mixing differ from the TensorFlow reference.
 
-### Pixel Architecture
+### Pixel Architecture (Keep it currently)
 
 Dreamer V1's image decoder uses transpose-convolution kernels that exactly expand from `1x1` to `64x64`. Dreamer V2 uses configurable CNN depth and separates CNN/MLP keys.
 
@@ -160,8 +161,8 @@ If training fails to improve:
 
 ## Highest-Priority Future Improvements
 
-1. Add exact Dreamer-style image preprocessing option: `image / 255.0 - 0.5` without per-pixel mean/std normalization.
-2. Add V2 free-nats/free-avg controls.
+1. Add V1-style image dequantization and bit-depth controls.
+K2. Add V2 free-nats/free-avg controls.
 3. Add distributional decoder/reward/value heads instead of plain MSE heads.
 4. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
 5. Add exact reference-style replay prefetching and dataset worker behavior.

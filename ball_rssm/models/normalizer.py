@@ -27,6 +27,7 @@ class Normalizer:
         action: np.ndarray,
         reward: np.ndarray | None = None,
         eps: float = 1e-6,
+        normalize_obs: bool = True,
         normalize_action: bool = True,
     ) -> "Normalizer":
         """Estimate normalization statistics from episode-major arrays."""
@@ -35,6 +36,12 @@ class Normalizer:
         # the checkpoint so actor rollout uses the same scale as training.
         obs_flat = obs.reshape(-1, *obs.shape[2:]).astype(np.float32)
         action_flat = action.reshape(-1, action.shape[-1]).astype(np.float32)
+        if normalize_obs:
+            obs_mean = obs_flat.mean(axis=0).astype(np.float32)
+            obs_std = (obs_flat.std(axis=0) + eps).astype(np.float32)
+        else:
+            obs_mean = np.zeros(obs.shape[2:], dtype=np.float32)
+            obs_std = np.ones(obs.shape[2:], dtype=np.float32)
         if normalize_action:
             action_mean = action_flat.mean(axis=0)
             action_std = action_flat.std(axis=0) + eps
@@ -49,8 +56,8 @@ class Normalizer:
             reward_mean = reward_flat.mean(axis=0)
             reward_std = reward_flat.std(axis=0) + eps
         return cls(
-            obs_mean=torch.from_numpy(obs_flat.mean(axis=0).astype(np.float32)),
-            obs_std=torch.from_numpy((obs_flat.std(axis=0) + eps).astype(np.float32)),
+            obs_mean=torch.from_numpy(obs_mean),
+            obs_std=torch.from_numpy(obs_std),
             action_mean=torch.from_numpy(action_mean.astype(np.float32)),
             action_std=torch.from_numpy(action_std.astype(np.float32)),
             reward_mean=torch.from_numpy(reward_mean),

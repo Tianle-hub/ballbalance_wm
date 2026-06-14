@@ -96,7 +96,7 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
 
 ## Pixel Training
 
-Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. In stream replay, image observations are stored as `[1, stream_time, channels, height, width]` with `is_first` markers at episode boundaries.
+Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. In stream replay, image observations are stored as `[1, stream_time, channels, height, width]` with `is_first` markers at episode boundaries. Rendered frames are preprocessed as `image / 255.0 - 0.5`, and pixel observation normalization is left as identity.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \

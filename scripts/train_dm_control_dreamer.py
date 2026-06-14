@@ -200,7 +200,10 @@ def main() -> None:
             arrays,
             capacity_steps=capacity_steps,
             max_episode_steps=args.max_episode_steps,
-            metadata={"action_normalization": "dm_control_normalized"},
+            metadata={
+                "action_normalization": "dm_control_normalized",
+                "pixel_preprocessing": "uint8_div255_minus_0.5",
+            },
         )
 
     if buffer.max_episode_steps != args.max_episode_steps:
@@ -222,12 +225,19 @@ def main() -> None:
 
     train_ds = buffer.sequence_dataset(args.seq_len, split="train", val_fraction=args.val_fraction, seed=args.seed)
     train_obs, train_action, train_reward = train_ds.selected_arrays()
-    # DM-Control actions are already stored in the wrapper's [-1, 1] coordinate
-    # system, matching Danijar's normalized action wrappers.
-    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward, normalize_action=False)
     obs_shape = tuple(int(dim) for dim in train_obs.shape[2:])
     action_dim = int(train_action.shape[-1])
     world_obs_type = "pixel" if args.obs_type == "pixel" else "vector"
+    # DM-Control actions are already stored in the wrapper's [-1, 1] coordinate
+    # system. Pixel observations are stored as image / 255 - 0.5, matching the
+    # Dreamer references, so they should not receive dataset mean/std scaling.
+    normalizer = Normalizer.from_arrays(
+        train_obs,
+        train_action,
+        train_reward,
+        normalize_obs=world_obs_type != "pixel",
+        normalize_action=False,
+    )
 
     resume_path = find_resume_checkpoint(run_dir, args.resume_from) if args.resume else None
     checkpoint: dict[str, Any] | None = load_checkpoint(resume_path, device) if resume_path is not None else None
@@ -315,6 +325,7 @@ def main() -> None:
         "replay": {
             "type": "step_stream",
             "action_normalization": "dm_control_normalized",
+            "pixel_preprocessing": "uint8_div255_minus_0.5" if world_obs_type == "pixel" else None,
             "capacity_steps": buffer.capacity_steps,
             "num_steps": buffer.num_steps,
         },

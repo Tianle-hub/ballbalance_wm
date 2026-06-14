@@ -108,7 +108,7 @@ class DMControlEnv:
     def _format_obs(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         if self.config.obs_type == "pixel":
             frame = self.render()
-            return np.moveaxis(frame.astype(np.float32) / 255.0, -1, 0)
+            return preprocess_pixel_frame(frame)
         return flatten_observation(observation, self._obs_keys)
 
 
@@ -214,6 +214,15 @@ def flatten_observation(observation: dict[str, np.ndarray], keys: tuple[str, ...
     return np.concatenate(parts, axis=0).astype(np.float32)
 
 
+def preprocess_pixel_frame(frame: np.ndarray) -> np.ndarray:
+    """Convert an HWC uint8 RGB frame to centered CHW float pixels."""
+
+    frame = np.asarray(frame)
+    if frame.ndim != 3 or frame.shape[-1] != 3:
+        raise ValueError("pixel frame must have shape [height, width, 3]")
+    return np.moveaxis(frame.astype(np.float32) / 255.0 - 0.5, -1, 0)
+
+
 def collect_random_dm_control(
     config: DMControlConfig,
     num_episodes: int,
@@ -239,6 +248,7 @@ def collect_random_dm_control(
         action_high=env.action_high,
         metadata={
             "action_normalization": "dm_control_normalized",
+            "pixel_preprocessing": "uint8_div255_minus_0.5",
             "real_action_low": env.real_action_low,
             "real_action_high": env.real_action_high,
         },
@@ -257,6 +267,7 @@ def collect_random_dm_control(
         "real_action_low": env.real_action_low,
         "real_action_high": env.real_action_high,
         "action_normalization": np.asarray("dm_control_normalized"),
+        "pixel_preprocessing": np.asarray("uint8_div255_minus_0.5"),
         "obs_type": np.asarray(config.obs_type),
         "domain": np.asarray(config.domain),
         "task": np.asarray(config.task),

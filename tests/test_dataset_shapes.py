@@ -5,6 +5,7 @@ import torch
 
 from ball_rssm.data.sequence_dataset import SequenceDataset
 from ball_rssm.buffer import Buffer
+from ball_rssm.envs.dm_control import preprocess_pixel_frame
 from ball_rssm.models import Normalizer, WorldModel, WorldModelConfig
 from ball_rssm.stream_replay import StreamReplay
 from scripts.collect_dataset import InitialStateBounds, collect_dataset, save_dataset
@@ -50,6 +51,41 @@ def test_pixel_sequence_dataset_and_normalizer_shapes(tmp_path) -> None:
     assert sample["action"].shape == (4, 2)
     assert normalizer.obs_mean.shape == (3, 64, 64)
     assert obs_norm.shape == (1, 5, 3, 64, 64)
+
+
+def test_pixel_preprocessing_matches_dreamer_centered_scale() -> None:
+    frame = np.array(
+        [
+            [[0, 127, 255], [255, 127, 0]],
+            [[64, 128, 192], [32, 160, 224]],
+        ],
+        dtype=np.uint8,
+    )
+
+    processed = preprocess_pixel_frame(frame)
+
+    assert processed.shape == (3, 2, 2)
+    np.testing.assert_allclose(processed[:, 0, 0], np.array([-0.5, 127.0 / 255.0 - 0.5, 0.5]))
+    assert processed.dtype == np.float32
+    assert processed.min() >= -0.5
+    assert processed.max() <= 0.5
+
+
+def test_normalizer_can_leave_pixel_observations_unscaled() -> None:
+    obs = (np.random.rand(2, 5, 3, 8, 8).astype(np.float32) - 0.5)
+    action = np.random.uniform(-1.0, 1.0, size=(2, 4, 2)).astype(np.float32)
+    reward = np.random.randn(2, 4, 1).astype(np.float32)
+
+    normalizer = Normalizer.from_arrays(obs, action, reward, normalize_obs=False, normalize_action=False)
+    obs_t = torch.from_numpy(obs[:1])
+    action_t = torch.from_numpy(action[:1])
+
+    torch.testing.assert_close(normalizer.normalize_obs(obs_t), obs_t)
+    torch.testing.assert_close(normalizer.denormalize_obs(obs_t), obs_t)
+    torch.testing.assert_close(normalizer.normalize_action(action_t), action_t)
+    assert normalizer.obs_mean.shape == (3, 8, 8)
+    assert torch.all(normalizer.obs_mean == 0.0)
+    assert torch.all(normalizer.obs_std == 1.0)
 
 
 def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
