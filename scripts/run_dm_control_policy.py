@@ -72,9 +72,8 @@ class DMControlPolicy:
         assert self.state is not None
         with torch.no_grad():
             features = self.world_model.features_from_state(self.state)
-            action_norm = self.actor.sample(features, deterministic=self.deterministic)
-            action_real = self.normalizer.denormalize_action(action_norm).reshape(-1)
-        action = action_real.detach().cpu().numpy().astype(np.float32)
+            action_tensor = self.actor.sample(features, deterministic=self.deterministic).reshape(-1)
+        action = action_tensor.detach().cpu().numpy().astype(np.float32)
         action = np.clip(action, self.action_low, self.action_high)
         self.prev_action = action
         self.needs_update = True

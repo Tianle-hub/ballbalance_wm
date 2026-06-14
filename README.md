@@ -82,7 +82,9 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
   --dreamer-version v2 \
   --stoch-dim 16 \
   --discrete-classes 32 \
-  --kl-alpha 0.8 \
+  --kl-balance 0.8 \
+  --kl-free 0.0 \
+  --kl-free-avg \
   --seed-episodes 20 \
   --buffer-episodes 2000 \
   --max-episode-steps 200 \

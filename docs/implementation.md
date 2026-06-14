@@ -21,7 +21,7 @@ The actor and critic train from imagined RSSM rollouts with TD(lambda)-style ret
 
 The world model now supports both state observations and pixel observations. State observations use MLP encoder/decoder; pixel observations use convolutional encoder/decoder.
 
-The V2 KL path includes a dynamics/representation split controlled by `kl_alpha`, similar in spirit to Dreamer V2's KL balancing.
+The V2 KL path includes Dreamer V2-style forward/reverse KL direction, balance, `free`, and `free_avg` controls.
 
 ## Important Differences
 
@@ -88,10 +88,10 @@ Dreamer V1 applies free nats to the KL. Dreamer V2 has configurable forward/reve
 This repo:
 
 - Applies `free_nats` to V1.
-- Uses KL balancing for V2 through `kl_alpha`.
-- Does not currently apply a V2 free-nats/free-avg threshold.
+- Uses Dreamer V2-style `kl_forward`, `kl_balance`, `kl_free`, and `kl_free_avg`.
+- Applies V2 free-nats either to the masked average KL (`free_avg=True`) or to each KL entry before averaging (`free_avg=False`).
 
-Potential issue: V2 categorical latents may collapse or over-regularize more easily without the exact reference KL controls.
+Remaining difference: this still uses the local RSSM parameterization and single-prior network, so matching KL controls does not make the world model architecture identical to the reference.
 
 ### Reward And Continuation
 
@@ -111,7 +111,7 @@ Danijar's DM-Control wrappers normalize bounded actions to `[-1, 1]`.
 
 The DM-Control path now matches this convention: `NormalizeActionWrapper` exposes `[-1, 1]` actions to collection, replay, actor training, and policy evaluation, then maps those actions back to the real DM-Control action spec before stepping the environment.
 
-Remaining issue: the older ball-balance path still uses replay-stat action normalization. Some shared trainer code therefore has to support both conventions.
+The DM-Control trainer treats this normalized action range as the actor's native action space and no longer routes actor bounds through replay-stat action normalization.
 
 ### Actor Gradient Modes (Keep it)
 
@@ -157,12 +157,11 @@ If training fails to improve:
 3. Reduce `seq-len`, `batch-size`, and `imagination-horizon` for pixel tasks until the smoke path is stable.
 4. Try larger models for pixel tasks: `deter_dim=200`, `stoch_dim=30`, `embed_dim=1024`.
 5. Tune reward and continuation loss weights; MSE reward scale differs from reference log-likelihood heads.
-6. Consider adding V2 free-nats/free-avg, layer norm, and ensemble priors before expecting reference-level V2 performance.
+6. Consider adding layer norm and ensemble priors before expecting reference-level V2 performance.
 
 ## Highest-Priority Future Improvements
 
 1. Add V1-style image dequantization and bit-depth controls.
-K2. Add V2 free-nats/free-avg controls.
-3. Add distributional decoder/reward/value heads instead of plain MSE heads.
-4. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
-5. Add exact reference-style replay prefetching and dataset worker behavior.
+2. Add distributional decoder/reward/value heads instead of plain MSE heads.
+3. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
+4. Add exact reference-style replay prefetching and dataset worker behavior.

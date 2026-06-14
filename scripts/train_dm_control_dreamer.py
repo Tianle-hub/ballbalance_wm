@@ -28,7 +28,7 @@ from ball_rssm.stream_replay import StreamReplay
 from ball_rssm.trainer import DreamerTrainConfig, Trainer
 from ball_rssm.utils.checkpoint import load_checkpoint
 from ball_rssm.utils.seed import set_seed
-from scripts.train_dreamer import find_resume_checkpoint, normalized_action_bounds
+from scripts.train_dreamer import find_resume_checkpoint
 
 
 class DMControlTrainer(Trainer):
@@ -82,8 +82,7 @@ class DMControlTrainer(Trainer):
             assert state is not None
             state = self._posterior_update_np(state, obs, prev_action, is_first=is_first)
             with torch.no_grad():
-                action_norm = self._sample_actor_action_norm(state, exploration_noise)
-                action = self.normalizer.denormalize_action(action_norm).reshape(env.action_shape)
+                action = self._sample_actor_action_norm(state, exploration_noise).reshape(env.action_shape)
             action_np = action.detach().cpu().numpy().astype(np.float32)
             action_np = np.clip(action_np, env.action_low, env.action_high)
             prev_action = action_np
@@ -142,7 +141,12 @@ def main() -> None:
     parser.add_argument("--critic-hidden-dim", type=int, default=128)
     parser.add_argument("--beta-kl", type=float, default=1.0)
     parser.add_argument("--free-nats", type=float, default=1.0)
-    parser.add_argument("--kl-alpha", type=float, default=0.8)
+    parser.add_argument("--kl-free", type=float, default=0.0)
+    parser.add_argument("--kl-balance", type=float, default=0.8)
+    parser.add_argument("--kl-forward", action="store_true", default=False)
+    parser.add_argument("--kl-reverse", dest="kl_forward", action="store_false")
+    parser.add_argument("--kl-free-avg", dest="kl_free_avg", action="store_true", default=True)
+    parser.add_argument("--no-kl-free-avg", dest="kl_free_avg", action="store_false")
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
     parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--imagination-horizon", type=int, default=15)
@@ -255,11 +259,15 @@ def main() -> None:
             discrete_classes=args.discrete_classes,
             beta_kl=args.beta_kl,
             free_nats=args.free_nats,
-            kl_alpha=args.kl_alpha,
+            kl_free=args.kl_free,
+            kl_forward=args.kl_forward,
+            kl_balance=args.kl_balance,
+            kl_free_avg=args.kl_free_avg,
             reward_loss_weight=args.reward_loss_weight,
             continuation_loss_weight=args.continuation_loss_weight,
         )
-        action_low, action_high = normalized_action_bounds(normalizer, action_bounds=action_bounds)
+        action_low = tuple(float(x) for x in action_bounds[0].reshape(-1))
+        action_high = tuple(float(x) for x in action_bounds[1].reshape(-1))
         actor_config = ActorConfig(
             feature_dim=world_config.feature_dim,
             action_dim=world_config.action_dim,

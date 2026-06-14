@@ -84,6 +84,70 @@ def test_dreamer_v2_discrete_world_model_shapes_and_balanced_kl() -> None:
     assert torch.isfinite(metrics["posterior_entropy_mean"])
 
 
+def test_dreamer_v2_kl_free_avg_threshold() -> None:
+    batch_size = 2
+    seq_len = 4
+    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=16,
+            stoch_dim=3,
+            discrete_classes=5,
+            embed_dim=8,
+            hidden_dim=16,
+            dreamer_version="v2",
+            kl_free=10.0,
+            kl_balance=0.8,
+            kl_forward=False,
+            kl_free_avg=True,
+        )
+    )
+
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq)
+
+    assert torch.isfinite(loss)
+    torch.testing.assert_close(metrics["kl_loss"], torch.tensor(10.0), rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(metrics["dynamics_kl_loss"], torch.tensor(10.0), rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(metrics["representation_kl_loss"], torch.tensor(10.0), rtol=0.0, atol=1e-6)
+
+
+def test_dreamer_v2_forward_kl_and_free_per_step_are_finite() -> None:
+    batch_size = 2
+    seq_len = 4
+    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=16,
+            stoch_dim=3,
+            discrete_classes=5,
+            embed_dim=8,
+            hidden_dim=16,
+            dreamer_version="v2",
+            kl_free=0.1,
+            kl_balance=0.7,
+            kl_forward=True,
+            kl_free_avg=False,
+        )
+    )
+
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq)
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["kl_loss"])
+    assert torch.isfinite(metrics["raw_kl"])
+    assert metrics["kl_loss"].item() >= 0.1
+
+
 def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     batch_size = 3
     seq_len = 7

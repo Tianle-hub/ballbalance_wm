@@ -15,7 +15,7 @@ actor directly from the RSSM belief state.
 | Option | RSSM latent | KL loss | Auto actor gradient | Auto online exploration |
 | --- | --- | --- | --- | --- |
 | `v1` | continuous Gaussian `z` with `stoch_dim` features | mean posterior-prior KL with `free_nats` | `dynamics` | `noise` |
-| `v2` | straight-through categorical `z` with `stoch_dim * discrete_classes` features | KL balance via `kl_alpha * dynamics_kl + (1 - kl_alpha) * representation_kl` | action-space dependent | `policy_entropy` |
+| `v2` | straight-through categorical `z` with `stoch_dim * discrete_classes` features | Dreamer V2 KL with `kl_forward`, `kl_balance`, `kl_free`, and `kl_free_avg` | action-space dependent | `policy_entropy` |
 
 The mode knobs are independent after initialization:
 

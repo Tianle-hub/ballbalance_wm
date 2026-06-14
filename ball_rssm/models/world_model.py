@@ -29,7 +29,11 @@ class WorldModelConfig:
     discrete_classes: int = 32
     beta_kl: float = 1.0
     free_nats: float = 1.0
-    kl_alpha: float = 0.8
+    kl_free: float = 0.0
+    kl_forward: bool = False
+    kl_balance: float = 0.8
+    kl_free_avg: bool = True
+    kl_alpha: float | None = None
     reward_loss_weight: float = 1.0
     continuation_loss_weight: float = 1.0
 
@@ -51,8 +55,14 @@ class WorldModelConfig:
             raise ValueError("pixel observations require obs_shape=(channels, height, width)")
         if self.discrete_classes < 2:
             raise ValueError("discrete_classes must be at least 2")
-        if not 0.0 <= self.kl_alpha <= 1.0:
-            raise ValueError("kl_alpha must be in [0, 1]")
+        if self.kl_alpha is not None:
+            self.kl_balance = float(self.kl_alpha)
+        if self.free_nats < 0.0:
+            raise ValueError("free_nats must be non-negative")
+        if self.kl_free < 0.0:
+            raise ValueError("kl_free must be non-negative")
+        if not 0.0 <= self.kl_balance <= 1.0:
+            raise ValueError("kl_balance must be in [0, 1]")
 
     @classmethod
     def from_dict(cls, state: dict[str, object]) -> "WorldModelConfig":
@@ -232,15 +242,10 @@ class WorldModel(nn.Module):
         kl = kl_divergence(posterior_dist, prior_dist)
         raw_kl = masked_mean(kl[:, 1:], effective_mask)
         if self.config.is_v2:
-            posterior_detached = self.rssm.detach_state(posterior)
-            prior_detached = self.rssm.detach_state(prior)
-            dynamics_kl = kl_divergence(self.rssm.get_dist(posterior_detached), prior_dist)
-            representation_kl = kl_divergence(posterior_dist, self.rssm.get_dist(prior_detached))
-            dynamics_kl_loss = masked_mean(dynamics_kl[:, 1:], effective_mask)
-            representation_kl_loss = masked_mean(representation_kl[:, 1:], effective_mask)
-            kl_loss = (
-                self.config.kl_alpha * dynamics_kl_loss
-                + (1.0 - self.config.kl_alpha) * representation_kl_loss
+            kl_loss, raw_kl, dynamics_kl_loss, representation_kl_loss = self.v2_kl_loss(
+                posterior,
+                prior,
+                effective_mask,
             )
         else:
             # Dreamer V1 applies free nats to the mean KL so small posterior-prior
@@ -274,6 +279,41 @@ class WorldModel(nn.Module):
             metrics["prior_entropy_mean"] = prior_dist.entropy().detach().mean()
         metrics.update({key: value.detach() for key, value in reward_metrics.items()})
         return total_loss, metrics
+
+    def v2_kl_loss(
+        self,
+        posterior: dict[str, torch.Tensor],
+        prior: dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Dreamer V2 KL with forward/reverse direction, balance, and free nats."""
+
+        if self.config.kl_forward:
+            lhs, rhs = prior, posterior
+            mix = self.config.kl_balance
+        else:
+            lhs, rhs = posterior, prior
+            mix = 1.0 - self.config.kl_balance
+
+        if self.config.kl_balance == 0.5:
+            value = kl_divergence(self.rssm.get_dist(lhs), self.rssm.get_dist(rhs))[:, 1:]
+            loss = free_kl(value, mask, self.config.kl_free, self.config.kl_free_avg)
+            raw = masked_mean(value, mask)
+            return loss, raw, loss, loss
+
+        lhs_detached = self.rssm.detach_state(lhs)
+        rhs_detached = self.rssm.detach_state(rhs)
+        value_lhs = kl_divergence(self.rssm.get_dist(lhs), self.rssm.get_dist(rhs_detached))[:, 1:]
+        value_rhs = kl_divergence(self.rssm.get_dist(lhs_detached), self.rssm.get_dist(rhs))[:, 1:]
+        loss_lhs = free_kl(value_lhs, mask, self.config.kl_free, self.config.kl_free_avg)
+        loss_rhs = free_kl(value_rhs, mask, self.config.kl_free, self.config.kl_free_avg)
+        loss = mix * loss_lhs + (1.0 - mix) * loss_rhs
+        raw = masked_mean(value_lhs, mask)
+        if self.config.kl_forward:
+            dynamics_loss, representation_loss = loss_lhs, loss_rhs
+        else:
+            representation_loss, dynamics_loss = loss_lhs, loss_rhs
+        return loss, raw, dynamics_loss, representation_loss
 
     def reconstruct(self, obs_seq: torch.Tensor, action_seq: torch.Tensor) -> torch.Tensor:
         """Return posterior reconstruction for an observed sequence."""
@@ -559,6 +599,18 @@ def transition_masks(
     post_done = ~effective
     nonterminal = effective & ~terminal
     return effective, nonterminal, terminal, post_done
+
+
+def free_kl(values: torch.Tensor, mask: torch.Tensor, free: float, free_avg: bool) -> torch.Tensor:
+    """Apply Dreamer V2 free-nats either to the average KL or per KL entry."""
+
+    if values.shape != mask.shape:
+        raise ValueError("values and mask must have the same shape")
+    if free_avg:
+        mean = masked_mean(values, mask)
+        return torch.maximum(mean, mean.new_tensor(free))
+    free_value = values.new_tensor(free)
+    return masked_mean(torch.maximum(values, free_value), mask)
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
