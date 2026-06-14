@@ -89,7 +89,10 @@ class DreamerAgent:
 
     def _posterior_update(self, obs: np.ndarray, prev_action: np.ndarray) -> RSSMState:
         assert self.state is not None
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, -1)
+        obs_shape = self.world_model.config.obs_shape
+        if obs_shape is None:
+            raise ValueError("world model config does not define obs_shape")
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, *obs_shape)
         action_t = torch.as_tensor(prev_action, dtype=torch.float32, device=self.device).reshape(1, -1)
         obs_norm = self.normalizer.normalize_obs(obs_t)
         action_norm = self.normalizer.normalize_action(action_t)

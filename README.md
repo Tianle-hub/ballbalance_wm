@@ -1,257 +1,181 @@
-# Ball Balance Dreamer V1/V2
+# DM-Control Dreamer V1/V2
 
-This project trains a low-dimensional PyTorch Dreamer agent for the analytical ball-board balancing environment. Use `--dreamer-version v1` for the continuous Gaussian RSSM or `--dreamer-version v2` for the discrete categorical RSSM with KL balancing.
+PyTorch Dreamer implementation for DeepMind Control Suite tasks. The same code supports:
 
-The previous PlaNet-style workflow has been removed. Dynamics learning, actor learning, and value learning now run in the same training loop. Control uses the learned actor directly from the RSSM belief state; there is no CEM, CEM-GD, or separate planning module.
+- Dreamer V1 style continuous Gaussian RSSM latents.
+- Dreamer V2 style straight-through categorical RSSM latents with KL balancing.
+- State observations from DM-Control observation dictionaries.
+- Pixel observations rendered from MuJoCo cameras.
+
+The original ball-balance environment is still available, but this branch is oriented around DM-Control.
 
 ## Install
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-Optional DM-Control support:
+Use Python 3.12 for DM-Control in this workspace. The existing Python 3.13 `.venv` can make `labmaze` fall back to a Bazel source build.
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv venv --python /usr/bin/python3.12 .venv-dm-control
-UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv-dm-control/bin/python -e ".[dm-control]"
-.venv-dm-control/bin/python scripts/run_dm_control_env.py --domain cartpole --task swingup --steps 100
+UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv-dm-control/bin/python -e ".[dm-control,dev]"
 ```
 
-This workspace also has a ready local `.venv-dm-control` environment because the Python 3.13 `.venv` can make `labmaze` fall back to a Bazel source build.
-
-See [docs/dm_control.md](docs/dm_control.md) for the migration path from this low-dimensional Dreamer to DM-Control state and pixel observations.
-
-## Environment
-
-`BallBalanceEnv` follows the Gymnasium terminated/truncated API.
-
-Observation:
-
-```text
-[x, y, vx, vy, theta_x, theta_y]
-```
-
-Action:
-
-```text
-[theta_x_cmd, theta_y_cmd]
-```
-
-The default task is center stabilization. The reward is bounded: centered stable states are near `1`, board-edge states approach `0` or below, and falling returns `-1` with `terminated=True`.
-
-## Collect Bootstrap Data
-
-Dreamer trains from replay batches. Start with a broad offline replay dataset:
+Smoke-test the environment:
 
 ```bash
-python scripts/collect_dataset.py \
-  --num-episodes 5000 \
-  --max-episode-steps 300 \
-  --mode coverage \
-  --pos-bound 0.45 \
-  --vel-bound 0.40 \
-  --angle-bound 0.12 \
-  --target-bound 0.15 \
-  --action-noise-std 0.04 \
-  --seed 0 \
-  --out data/ball_balance_coverage_v0.npz
+.venv-dm-control/bin/python scripts/run_dm_control_env.py \
+  --domain cartpole \
+  --task swingup \
+  --steps 20
 ```
 
-Saved arrays:
-
-```text
-obs:        [num_episodes, max_episode_steps + 1, 6]
-action:     [num_episodes, max_episode_steps, 2]
-reward:     [num_episodes, max_episode_steps, 1]
-terminated: [num_episodes, max_episode_steps, 1]
-truncated:  [num_episodes, max_episode_steps, 1]
-done:       [num_episodes, max_episode_steps, 1]
-```
-
-Convention:
-
-```text
-obs[:, t] + action[:, t] -> obs[:, t + 1]
-```
-
-## Train Dreamer Offline
+On headless machines, use EGL for rendering:
 
 ```bash
-python scripts/train_dreamer.py \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_v0 \
+.venv-dm-control/bin/python scripts/run_dm_control_env.py \
+  --domain cartpole \
+  --task swingup \
+  --render \
+  --mujoco-gl egl \
+  --frames-out outputs/smoke/cartpole
+```
+
+## Train Dreamer V1
+
+Start with state observations. This is the quickest way to verify the world model, actor, critic, replay, and checkpointing loop.
+
+```bash
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --domain cartpole \
+  --task swingup \
+  --obs-type state \
+  --run-dir runs/dmc_cartpole_swingup_v1 \
   --dreamer-version v1 \
-  --seq-len 200 \
-  --batch-size 512 \
-  --epochs 100 \
-  --imagination-horizon 15 \
-  --behavior-batch-size 4096
+  --seed-episodes 20 \
+  --buffer-episodes 2000 \
+  --max-episode-steps 200 \
+  --online-iterations 100 \
+  --update-steps 100 \
+  --collect-episodes 5 \
+  --seq-len 50 \
+  --batch-size 128 \
+  --imagination-horizon 15
 ```
 
-long imagine horizon trial:
-```bash
-python scripts/train_dreamer.py \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_v1 \
-  --seq-len 200 \
-  --batch-size 512 \
-  --epochs 100 \
-  --imagination-horizon 50 \
-  --behavior-batch-size 4096
+Checkpoints and replay are written under:
+
+```text
+runs/dmc_cartpole_swingup_v1/checkpoints/
+runs/dmc_cartpole_swingup_v1/replay/latest.npz
 ```
 
-## Train Dreamer Online
+## Train Dreamer V2
 
-Online training starts with seed replay collected into the buffer, then alternates model/actor/value updates with actor-driven data collection, following the loop used in `dreamer-torch-v1v2`.
+V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-gradient auto` resolves to dynamics gradients; `--exploration-mode auto` resolves to policy-entropy sampling for V2.
 
 ```bash
-python scripts/train_dreamer.py \
-  --train-mode online \
-  --run-dir runs/dreamer_ball_online_v2_more_data \
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --domain cartpole \
+  --task swingup \
+  --obs-type state \
+  --run-dir runs/dmc_cartpole_swingup_v2 \
   --dreamer-version v2 \
-  --seed-episodes 200 \
-  --buffer-episodes 20000 \
-  --max-episode-steps 300 \
-  --seed-policy-mode coverage \
-  --pos-bound 0.45 \
-  --vel-bound 0.40 \
-  --angle-bound 0.12 \
-  --target-bound 0.15 \
-  --action-noise-std 0.04 \
-  --online-iterations 300 \
-  --update-steps 150 \
-  --collect-episodes 50 \
-  --exploration-noise 0.3 \
-  --exploration-decay 0.995 \
-  --min-exploration-noise 0.05 \
-  --seq-len 200 \
-  --batch-size 256
+  --stoch-dim 16 \
+  --discrete-classes 32 \
+  --kl-alpha 0.8 \
+  --seed-episodes 20 \
+  --buffer-episodes 2000 \
+  --max-episode-steps 200 \
+  --online-iterations 100 \
+  --update-steps 100 \
+  --collect-episodes 5 \
+  --seq-len 50 \
+  --batch-size 128 \
+  --imagination-horizon 15
 ```
 
-If `--dataset` is supplied in online mode, that replay is used as the seed buffer. Otherwise the script collects `--seed-episodes` using `--seed-policy-mode`. Online replay is saved to `runs/.../replay/latest.npz` so resumed runs can continue from the latest actor-collected buffer.
+## Pixel Training
 
-Coverage-initialized online DreamerV1:
+Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. The replay shape is `[episode, time, channels, height, width]`.
 
 ```bash
-python scripts/train_dreamer.py \
-  --train-mode online \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_online_v1_coverage_init_center_bonus \
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --domain cartpole \
+  --task swingup \
+  --obs-type pixel \
+  --height 64 \
+  --width 64 \
+  --camera-id 0 \
+  --mujoco-gl egl \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v1 \
   --dreamer-version v1 \
-  --actor-gradient auto \
-  --exploration-mode noise \
-  --buffer-episodes 5000 \
-  --max-episode-steps 300 \
+  --seed-episodes 20 \
+  --buffer-episodes 1000 \
+  --max-episode-steps 200 \
   --online-iterations 100 \
-  --update-steps 150 \
-  --collect-episodes 100 \
-  --exploration-noise 0.3 \
-  --exploration-decay 0.995 \
-  --min-exploration-noise 0.05 \
-  --seq-len 200 \
-  --batch-size 512
+  --update-steps 100 \
+  --collect-episodes 5 \
+  --seq-len 50 \
+  --batch-size 32 \
+  --imagination-horizon 15
 ```
 
-Coverage-initialized DreamerV2 latents with dynamics actor gradients:
+Pixel training is much heavier than state training. Use small `--batch-size` first.
+
+## Evaluate A Checkpoint
+
+Evaluate without rendering:
 
 ```bash
-python scripts/train_dreamer.py \
-  --train-mode online \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --run-dir runs/dreamer_ball_online_v2_coverage_init_center_bonus \
-  --dreamer-version v2 \
-  --actor-gradient auto \
-  --exploration-mode policy_entropy \
-  --buffer-episodes 5000 \
-  --max-episode-steps 300 \
-  --online-iterations 100 \
-  --update-steps 150 \
-  --collect-episodes 100 \
-  --exploration-noise 0.3 \
-  --exploration-decay 0.995 \
-  --min-exploration-noise 0.05 \
-  --seq-len 200 \
-  --batch-size 512
+.venv-dm-control/bin/python scripts/run_dm_control_policy.py \
+  --checkpoint runs/dmc_cartpole_swingup_v1/checkpoints/best.pt \
+  --num-episodes 10 \
+  --max-steps 200 \
+  --device cpu
 ```
 
-In the V2 command above, `--actor-gradient auto` resolves to `dynamics` because ball balance uses continuous actions. This disables REINFORCE while keeping the V2 categorical RSSM and KL balancing. Use `--actor-gradient both` to try the DreamerV2 Eq. 6 style mixture of score-function and dynamics terms. `--exploration-mode policy_entropy` samples from the actor distribution during data collection and ignores the external noise schedule; switch it to `noise` if you want V1-style Gaussian action noise instead.
-
-Each batch performs:
-
-1. RSSM world-model update from reconstruction, reward, continuation, and KL losses.
-2. Actor update by backpropagating imagined TD(lambda) returns through frozen RSSM dynamics.
-3. Critic update toward target-critic TD(lambda) returns from imagined rollouts.
-
-V1 uses the Gaussian posterior/prior KL with free nats. V2 uses a straight-through categorical latent state and the reference KL balance controlled by `--kl-alpha`.
-
-`--behavior-batch-size` caps how many posterior RSSM states are used as starts for actor/value imagination. The world model still trains on the full sequence batch; this cap only prevents long `seq-len` values from exploding the behavior update.
-
-Checkpoints are written under `runs/dreamer_ball_v0/checkpoints/` and contain the world model, actor, critic, target critic, normalizer, optimizer states, and configs.
-
-## Evaluate Actor
+Run the trained policy online in the DM-Control environment and save rendered frames plus a GIF:
 
 ```bash
-python scripts/run_dreamer_policy.py \
-  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
-  --num-episodes 20 \
-  --max-steps 300 \
-  --save-plots \
-  --save-episodes
-```
-
-For a live closed-loop visualizer that runs the same policy evaluation path:
-
-```bash
-python scripts/visualize_dreamer_policy.py \
-  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
+.venv-dm-control/bin/python scripts/run_dm_control_policy.py \
+  --checkpoint runs/dmc_cartpole_swingup_v1/checkpoints/best.pt \
   --num-episodes 3 \
-  --max-steps 300 \
-  --play 
-  # --save-gif \
-  # --save-plots \
-  # --save-episodes
+  --max-steps 200 \
+  --render \
+  --mujoco-gl egl \
+  --frames-out outputs/dmc_cartpole_swingup_v1_frames \
+  --gif-out outputs/dmc_cartpole_swingup_v1.gif \
+  --device cpu
 ```
 
-This runs closed-loop control as:
+The policy runner infers `domain`, `task`, `obs_type`, image size, camera, and action repeat from the checkpoint when the checkpoint was produced by `scripts/train_dm_control_dreamer.py`. Override them with CLI flags if needed.
 
-```text
-real obs_t -> RSSM posterior update -> actor(action | latent belief) -> env step
-```
+## Random Replay Only
 
-No action sequence optimization or replanning is used.
-
-## World-Model Diagnostics
-
-Open-loop RSSM quality is still important because actor/value training happens in imagined latent rollouts.
+For debugging offline world-model training or inspecting dataset shapes:
 
 ```bash
-python scripts/eval_rssm_prediction.py \
-  --checkpoint runs/dreamer_ball_v0/checkpoints/best.pt \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --context-len 10 \
-  --horizon 50
+.venv-dm-control/bin/python scripts/collect_dm_control_dataset.py \
+  --domain walker \
+  --task walk \
+  --obs-type state \
+  --num-episodes 100 \
+  --max-episode-steps 200 \
+  --out data/dmc_walker_walk_random_state.npz
 ```
 
-To check the latent dynamics model, todo: add an argument as num of different play, so we can check multiple runs
-```bash
-python scripts/visualize_rssm_rollout.py \
-  --checkpoint runs/dreamer_ball_v0/checkpoints/best.pt \
-  --dataset data/ball_balance_coverage_v0.npz \
-  --context-len 10 \
-  --horizon 100 \
-  --play
-```
-
-## Docs
-
-- [DreamerV1 workflow](docs/dreamer_v1_workflow.md)
-- [Architecture notes](docs/architecture.md)
-
-## Test
+Then train from that replay with the generic offline trainer:
 
 ```bash
-pytest
+.venv-dm-control/bin/python scripts/train_dreamer.py \
+  --dataset data/dmc_walker_walk_random_state.npz \
+  --run-dir runs/dmc_walker_walk_offline_v1 \
+  --train-mode offline \
+  --obs-type auto \
+  --dreamer-version v1 \
+  --seq-len 50 \
+  --batch-size 128 \
+  --epochs 50
 ```
+
+## Implementation Notes
+
+See [docs/implementation.md](docs/implementation.md) for differences from Danijar Hafner's local Dreamer V1/V2 reference implementations and likely issues to watch while scaling this implementation.

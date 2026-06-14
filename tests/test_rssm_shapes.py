@@ -117,3 +117,60 @@ def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     assert torch.isfinite(metrics["continuation_loss"])
     assert torch.isfinite(metrics["continuation_prob_nonterminal"])
     assert torch.isfinite(metrics["continuation_prob_terminal"])
+
+
+def test_pixel_world_model_shapes_and_finite_loss() -> None:
+    batch_size = 2
+    seq_len = 3
+    obs_shape = (3, 64, 64)
+    obs_seq = torch.rand(batch_size, seq_len + 1, *obs_shape)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_type="pixel",
+            obs_shape=obs_shape,
+            action_dim=2,
+            deter_dim=24,
+            stoch_dim=6,
+            embed_dim=32,
+            hidden_dim=32,
+        )
+    )
+    out = model.forward(obs_seq, action_seq)
+
+    assert model.config.obs_dim == 3 * 64 * 64
+    assert out["recon"].shape == (batch_size, seq_len + 1, *obs_shape)
+    assert out["prior_recon"].shape == (batch_size, seq_len + 1, *obs_shape)
+    assert out["reward_pred"].shape == (batch_size, seq_len + 1, 1)
+    assert out["continuation_logit"].shape == (batch_size, seq_len + 1, 1)
+    assert out["prior"]["mean"].shape == (batch_size, seq_len + 1, 6)
+    assert out["posterior"]["std"].shape == (batch_size, seq_len + 1, 6)
+
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq)
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["recon_loss"])
+    assert torch.isfinite(metrics["reward_loss"])
+    assert torch.isfinite(metrics["kl_loss"])
+
+    pred = model.open_loop_predict(obs_seq, action_seq, context_len=1, horizon=2)
+    assert pred.shape == (batch_size, 2, *obs_shape)
+
+
+def test_world_model_config_round_trips_pixel_shape_from_dict() -> None:
+    config = WorldModelConfig.from_dict(
+        {
+            "obs_type": "pixels",
+            "obs_shape": [3, 64, 64],
+            "action_dim": 4,
+            "dreamer_version": "dreamer2",
+            "stoch_dim": 4,
+        }
+    )
+
+    assert config.obs_type == "pixel"
+    assert config.obs_shape == (3, 64, 64)
+    assert config.obs_dim == 3 * 64 * 64
+    assert config.action_dim == 4
+    assert config.is_v2

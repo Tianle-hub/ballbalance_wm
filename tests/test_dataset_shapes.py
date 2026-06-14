@@ -32,6 +32,25 @@ def test_sequence_dataset_window_shapes(tmp_path) -> None:
     assert sample["action"].dtype.is_floating_point
 
 
+def test_pixel_sequence_dataset_and_normalizer_shapes(tmp_path) -> None:
+    obs = np.random.rand(3, 7, 3, 64, 64).astype(np.float32)
+    action = np.random.randn(3, 6, 2).astype(np.float32)
+    reward = np.random.randn(3, 6, 1).astype(np.float32)
+    path = tmp_path / "pixel_dummy.npz"
+    np.savez(path, obs=obs, action=action, reward=reward)
+
+    dataset = SequenceDataset(path, seq_len=4, split="all")
+    sample = dataset[0]
+    train_obs, train_action, train_reward = dataset.selected_arrays()
+    normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
+    obs_norm = normalizer.normalize_obs(sample["obs"].unsqueeze(0))
+
+    assert sample["obs"].shape == (5, 3, 64, 64)
+    assert sample["action"].shape == (4, 2)
+    assert normalizer.obs_mean.shape == (3, 64, 64)
+    assert obs_norm.shape == (1, 5, 3, 64, 64)
+
+
 def test_buffer_collect_save_load_and_sequence_dataset(tmp_path) -> None:
     path = tmp_path / "buffer_dataset.npz"
     buffer = Buffer.collect_data(num_episodes=3, max_episode_steps=12, seed=5, mode="mixed")

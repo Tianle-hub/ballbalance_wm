@@ -2,7 +2,7 @@
 
 Examples:
     python scripts/run_dm_control_env.py --domain cartpole --task swingup --steps 100
-    python scripts/run_dm_control_env.py --domain walker --task walk --render --frames-out out
+    python scripts/run_dm_control_env.py --domain walker --task walk --viewer --mujoco-gl glfw
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -30,6 +31,36 @@ def describe_observation(observation: dict[str, np.ndarray]) -> str:
     return "; ".join(parts)
 
 
+def configure_gl_backend(mujoco_gl: str | None) -> None:
+    if mujoco_gl is None:
+        return
+
+    os.environ["MUJOCO_GL"] = mujoco_gl
+    if mujoco_gl in {"egl", "osmesa"}:
+        os.environ.setdefault("PYOPENGL_PLATFORM", mujoco_gl)
+
+
+def import_suite():
+    try:
+        from dm_control import suite
+    except AttributeError as exc:
+        if "'NoneType' object has no attribute 'glGetError'" in str(exc):
+            raise RuntimeError(
+                "PyOpenGL could not initialize the selected offscreen renderer. "
+                "On headless machines, prefer '--mujoco-gl egl'. "
+                "The 'osmesa' backend also requires system OSMesa libraries."
+            ) from exc
+        raise
+    return suite
+
+
+def make_random_policy(action_spec, rng: np.random.Generator):
+    def policy(_timestep):
+        return sample_bounded_action(action_spec, rng)
+
+    return policy
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--domain", default="cartpole", help="DM-Control domain name, e.g. cartpole, walker, cheetah")
@@ -42,18 +73,30 @@ def main() -> None:
     parser.add_argument("--camera-id", type=int, default=0)
     parser.add_argument("--render-every", type=int, default=10)
     parser.add_argument("--frames-out", default=None, help="Optional directory for rendered PNG frames.")
+    parser.add_argument("--viewer", action="store_true", help="Launch the live dm_control viewer.")
+    parser.add_argument(
+        "--viewer-policy",
+        default="random",
+        choices=["random", "default"],
+        help="Policy used by the live viewer. 'default' uses dm_control's midpoint action.",
+    )
+    parser.add_argument("--viewer-width", type=int, default=1024)
+    parser.add_argument("--viewer-height", type=int, default=768)
     parser.add_argument(
         "--mujoco-gl",
         default=None,
         choices=["egl", "osmesa", "glfw"],
-        help="Set MUJOCO_GL before importing dm_control. Try osmesa on CPU-only headless machines.",
+        help="Set MUJOCO_GL before importing dm_control. Use glfw for the live viewer.",
     )
     args = parser.parse_args()
 
-    if args.mujoco_gl is not None:
-        os.environ["MUJOCO_GL"] = args.mujoco_gl
+    configure_gl_backend(args.mujoco_gl)
 
-    from dm_control import suite
+    try:
+        suite = import_suite()
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
     rng = np.random.default_rng(args.seed)
     env = suite.load(domain_name=args.domain, task_name=args.task, task_kwargs={"random": args.seed})
@@ -72,6 +115,32 @@ def main() -> None:
     print("Observation spec:")
     for name, spec in obs_spec.items():
         print(f"  {name}: shape={spec.shape}, dtype={spec.dtype}")
+
+    if args.viewer:
+        from dm_control import viewer
+
+        policy = None
+        if args.viewer_policy == "random":
+            policy = make_random_policy(action_spec, rng)
+        print("Launching live dm_control viewer. Press Space to pause/run, Backspace to reset, F1 for help.")
+        try:
+            viewer.launch(
+                env,
+                policy=policy,
+                title=f"dm_control: {args.domain}/{args.task}",
+                width=args.viewer_width,
+                height=args.viewer_height,
+            )
+        except RuntimeError as exc:
+            if "Failed to create window" in str(exc):
+                print(
+                    "Error: could not open the GLFW viewer window. Run this from a desktop session "
+                    "or enable X11/Wayland forwarding, and use '--mujoco-gl glfw'.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from exc
+            raise
+        return
 
     timestep = env.reset()
     print(f"Initial observation: {describe_observation(timestep.observation)}")
@@ -99,6 +168,8 @@ def main() -> None:
             timestep = env.reset()
 
     print(f"Completed {args.steps} random steps; total_reward={total_reward:.3f}; rendered_frames={rendered}")
+    if rendered and frames_dir is not None:
+        print(f"Saved rendered PNG frames to: {frames_dir}")
 
 
 if __name__ == "__main__":

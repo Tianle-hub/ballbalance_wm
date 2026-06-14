@@ -31,14 +31,14 @@ RSSM feature [h_t, z_t] -> ConvDecoder -> image reconstruction
 RSSM feature [h_t, z_t] -> MLP reward / continuation / actor / critic
 ```
 
-Recommended code changes:
+Implemented model changes:
 
-1. Add `obs_type: str = "vector"` and `obs_shape: tuple[int, ...]` to `WorldModelConfig`.
-2. Keep the existing MLP encoder/decoder for `obs_type == "vector"`.
-3. Add `ConvEncoder` for pixel inputs shaped `[batch, time, channels, height, width]`.
-4. Add `ConvDecoder` that reconstructs pixels from Dreamer features.
-5. Change reconstruction loss for pixels from plain MSE over flat vectors to image loss over `[C, H, W]`; Dreamer commonly uses normalized pixels in `[0, 1]` or `[-0.5, 0.5]`.
-6. Keep reward, continuation, actor, and critic heads as MLPs over latent features.
+1. `WorldModelConfig` has `obs_type: str = "vector"` and `obs_shape: tuple[int, ...]`.
+2. `obs_type == "vector"` keeps the existing MLP encoder/decoder.
+3. `obs_type == "pixel"` uses `ConvEncoder` for inputs shaped `[batch, time, channels, height, width]`.
+4. Pixel models use `ConvDecoder` to reconstruct image observations from Dreamer features.
+5. Reconstruction loss now reduces over all trailing observation dimensions, so vector and pixel observations both produce per-step MSE.
+6. Reward, continuation, actor, and critic heads still use MLPs over RSSM features.
 
 Practical ConvEncoder shape:
 
@@ -74,28 +74,18 @@ Run a state-observation smoke test:
 .venv-dm-control/bin/python scripts/run_dm_control_env.py --domain cartpole --task swingup --steps 100
 ```
 
-Check RGB rendering:
+Watch the environment in the live viewer:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_env.py \
   --domain walker \
   --task walk \
-  --steps 50 \
-  --render \
-  --frames-out output-smoke/dm-control-walker
+  --viewer \
+  --mujoco-gl glfw
 ```
 
-On headless machines, try:
-
-```bash
-.venv-dm-control/bin/python scripts/run_dm_control_env.py --domain cartpole --task swingup --render --mujoco-gl osmesa
-```
-
-or:
-
-```bash
-.venv-dm-control/bin/python scripts/run_dm_control_env.py --domain cartpole --task swingup --render --mujoco-gl egl
-```
+The viewer starts paused. Press Space to run or pause, Backspace to reset, and
+F1 for the built-in controls.
 
 The project extra pins `mujoco>=3.8.1,<3.9` because `dm-control 1.0.41` and `mujoco 3.9.0` currently disagree on MuJoCo model fields. Python 3.12 is the smoother local choice; Python 3.13 may require a working Bazel install to build `labmaze`.
 
@@ -105,9 +95,8 @@ A conservative migration path is:
 
 1. Build a `DMControlEnv` adapter and replay collector for flattened observations.
 2. Train the existing Dreamer on `cartpole/swingup` or `cheetah/run` from state observations.
-3. Add `ConvEncoder` and `ConvDecoder`.
-4. Collect pixel replay with `physics.render(height=64, width=64, camera_id=...)`.
-5. Train the world model with image reconstruction, reward, continuation, and KL losses.
-6. Reuse the actor and critic without changing their input interface, because they already consume RSSM features.
+3. Collect pixel replay with `physics.render(height=64, width=64, camera_id=...)`.
+4. Train with `--obs-type pixel` so `WorldModel` selects the convolutional encoder/decoder.
+5. Reuse the actor and critic without changing their input interface, because they already consume RSSM features.
 
 The important boundary is: change the observation model for pixels, not the RSSM dynamics API.

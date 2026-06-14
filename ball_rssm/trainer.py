@@ -660,7 +660,10 @@ class Trainer:
         )
 
     def _posterior_update_np(self, state: RSSMState, obs: np.ndarray, action: np.ndarray) -> RSSMState:
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, -1)
+        obs_shape = self.world_model.config.obs_shape
+        if obs_shape is None:
+            raise ValueError("world model config does not define obs_shape")
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).reshape(1, *obs_shape)
         action_t = torch.as_tensor(action, dtype=torch.float32, device=self.device).reshape(1, -1)
         return self.world_model.posterior_update(
             state,

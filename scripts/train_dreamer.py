@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from math import prod
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,16 +36,66 @@ def find_resume_checkpoint(run_dir: Path, explicit_path: str | None) -> Path | N
     return None
 
 
-def normalized_action_bounds(normalizer: Normalizer) -> tuple[tuple[float, ...], tuple[float, ...]]:
+def normalized_action_bounds(
+    normalizer: Normalizer,
+    action_arrays: np.ndarray | None = None,
+    action_bounds: tuple[np.ndarray, np.ndarray] | None = None,
+    use_ball_env_bounds: bool = True,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    if action_bounds is not None:
+        low = torch.as_tensor(action_bounds[0].reshape(-1), dtype=torch.float32)
+        high = torch.as_tensor(action_bounds[1].reshape(-1), dtype=torch.float32)
+        low_norm = normalizer.normalize_action(low)
+        high_norm = normalizer.normalize_action(high)
+        return tuple(float(x) for x in low_norm), tuple(float(x) for x in high_norm)
+
+    if use_ball_env_bounds:
+        try:
+            return normalized_ball_action_bounds(normalizer)
+        except ValueError:
+            if action_arrays is None:
+                raise
+
+    if action_arrays is None:
+        action_dim = int(normalizer.action_mean.numel())
+        low_norm = torch.full((action_dim,), -1.0)
+        high_norm = torch.full((action_dim,), 1.0)
+    else:
+        action_flat = action_arrays.reshape(-1, action_arrays.shape[-1]).astype(np.float32)
+        low = torch.from_numpy(action_flat.min(axis=0))
+        high = torch.from_numpy(action_flat.max(axis=0))
+        low_norm = normalizer.normalize_action(low)
+        high_norm = normalizer.normalize_action(high)
+    return tuple(float(x) for x in low_norm), tuple(float(x) for x in high_norm)
+
+
+def normalized_ball_action_bounds(normalizer: Normalizer) -> tuple[tuple[float, ...], tuple[float, ...]]:
     env = BallBalanceEnv()
     try:
         low = torch.as_tensor(env.action_space.low.reshape(-1), dtype=torch.float32)
         high = torch.as_tensor(env.action_space.high.reshape(-1), dtype=torch.float32)
+        if low.numel() != normalizer.action_mean.numel():
+            raise ValueError("BallBalanceEnv action bounds do not match replay action_dim")
         low_norm = normalizer.normalize_action(low)
         high_norm = normalizer.normalize_action(high)
     finally:
         env.close()
     return tuple(float(x) for x in low_norm), tuple(float(x) for x in high_norm)
+
+
+def infer_obs_type(requested: str, obs_shape: tuple[int, ...]) -> str:
+    if requested != "auto":
+        return requested
+    return "pixel" if len(obs_shape) == 3 else "vector"
+
+
+def load_dataset_action_bounds(path: str | None) -> tuple[np.ndarray, np.ndarray] | None:
+    if path is None:
+        return None
+    with np.load(path) as arrays:
+        if "action_low" not in arrays or "action_high" not in arrays:
+            return None
+        return arrays["action_low"].astype(np.float32), arrays["action_high"].astype(np.float32)
 
 
 def main() -> None:
@@ -52,6 +104,12 @@ def main() -> None:
     parser.add_argument("--run-dir", default="runs/dreamer_ball_v0")
     parser.add_argument("--train-mode", choices=["offline", "online"], default="offline")
     parser.add_argument("--dreamer-version", choices=["v1", "v2"], default="v1")
+    parser.add_argument(
+        "--obs-type",
+        choices=["auto", "vector", "pixel"],
+        default="auto",
+        help="Observation model type. auto treats 3D trailing obs shapes as pixels.",
+    )
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=100)
@@ -168,12 +226,24 @@ def main() -> None:
     train_ds = buffer.sequence_dataset(args.seq_len, split="train", val_fraction=args.val_fraction, seed=args.seed)
     train_obs, train_action, train_reward = train_ds.selected_arrays()
     normalizer = Normalizer.from_arrays(train_obs, train_action, train_reward)
+    obs_shape = tuple(int(dim) for dim in train_obs.shape[2:])
+    action_dim = int(train_action.shape[-1])
+    obs_type = infer_obs_type(args.obs_type, obs_shape)
+    action_bounds = load_dataset_action_bounds(args.dataset)
+    if obs_type == "vector" and len(obs_shape) != 1:
+        parser.error(f"--obs-type vector requires replay obs shape [N, T, obs_dim], got trailing shape {obs_shape}")
+    if obs_type == "pixel" and len(obs_shape) != 3:
+        parser.error(f"--obs-type pixel requires replay obs shape [N, T, C, H, W], got trailing shape {obs_shape}")
 
     resume_path = find_resume_checkpoint(run_dir, args.resume_from) if args.resume else None
     checkpoint: dict[str, Any] | None = load_checkpoint(resume_path, device) if resume_path is not None else None
 
     if checkpoint is None:
         world_config = WorldModelConfig(
+            obs_dim=int(prod(obs_shape)),
+            obs_shape=obs_shape,
+            obs_type=obs_type,
+            action_dim=action_dim,
             deter_dim=args.deter_dim,
             stoch_dim=args.stoch_dim,
             embed_dim=args.embed_dim,
@@ -186,7 +256,13 @@ def main() -> None:
             reward_loss_weight=args.reward_loss_weight,
             continuation_loss_weight=args.continuation_loss_weight,
         )
-        action_low, action_high = normalized_action_bounds(normalizer)
+        use_ball_env_bounds = obs_shape == (6,) and action_dim == 2
+        action_low, action_high = normalized_action_bounds(
+            normalizer,
+            action_arrays=train_action,
+            action_bounds=action_bounds,
+            use_ball_env_bounds=use_ball_env_bounds,
+        )
         actor_config = ActorConfig(
             feature_dim=world_config.feature_dim,
             action_dim=world_config.action_dim,
