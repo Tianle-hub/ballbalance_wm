@@ -218,9 +218,10 @@ class Trainer:
                 val_metrics = self.run_epoch(val_loader, train=False, desc=f"iter {iteration} val")
                 open_loop = self.validation_open_loop_losses(val_loader, horizons=(1, 5, 10, 25, 50))
 
+            episode_horizon_steps = self.buffer.max_episode_steps
             collect_metrics = self.collect_actor_episodes(
                 num_episodes=collect_episodes,
-                max_episode_steps=self.buffer.max_episode_steps,
+                max_episode_steps=episode_horizon_steps,
                 seed=seed + 10_000 + iteration * max(collect_episodes, 1),
                 initial_bounds=initial_bounds,
                 exploration_noise=self.effective_exploration_noise(exploration_noise),
@@ -352,9 +353,6 @@ class Trainer:
     ) -> dict[str, torch.Tensor]:
         self.world_optimizer.zero_grad(set_to_none=True)
 
-        # TODO: I wonder whether it is common technique to first update the world model paras, and then update actor, and critic
-        # First update the RSSM and prediction heads on real replay sequences,
-        # then use the updated model to create starts for Dreamer behavior.
         world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated, is_first)
         world_loss.backward()
         world_grad = torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.config.grad_clip)
@@ -365,6 +363,7 @@ class Trainer:
             # PlaNet would stop here and use the frozen model in a CEM controller.
             posterior = self.world_model.forward(obs, action, is_first)["posterior"]
             assert isinstance(posterior, dict)
+            # TODO: why we need full_start and start? or start here is prev state?
             full_start = flatten_state_sequence(posterior, drop_last=True)
             start = sample_state_batch(full_start, self.config.behavior_batch_size)
 
@@ -470,17 +469,20 @@ class Trainer:
         entropies: list[torch.Tensor] = []
         log_probs: list[torch.Tensor] = []
         for _ in range(self.config.imagination_horizon):
-            features = self.world_model.features_from_state(prev)
-            dist = self.actor(features)
+            features = torch.cat([prev.h, prev.z], dim=-1)
+            dist = self.actor(features) # ActionDecoder, in deter mode
             if deterministic:
                 action = dist.mode()
                 log_prob = torch.zeros(action.shape[:-1], device=action.device, dtype=action.dtype)
             elif actor_gradient == "reinforce":
-                # TODO：unknwon to me why reinforce uses sample_with_log_prob, and both use rsample_with_log_prob
-                # add comments for me to help me understand the difference between these two sampling methods, and why they are used in different actor_gradient modes
+                # REINFORCE uses the score-function term grad(log pi(a|s)) * return.
+                # The sampled action is detached so actor gradients flow through log_prob,
+                # not through the imagined dynamics path created by the sampled action.
                 action, log_prob = dist.sample_with_log_prob()
                 action = action.detach()
             elif actor_gradient == "both":
+                # "both" keeps the reparameterized action path and also records log_prob,
+                # combining pathwise dynamics gradients with the score-function term.
                 action, log_prob = dist.rsample_with_log_prob()
             else:
                 action = dist.rsample()
@@ -659,7 +661,7 @@ class Trainer:
         )
 
     def _sample_actor_action_norm(self, state: RSSMState, exploration_noise: float) -> torch.Tensor:
-        features = self.world_model.features_from_state(state)
+        features = torch.cat([state.h, state.z], dim=-1)
         action_norm = self.actor.sample(features, deterministic=False)
         if exploration_noise > 0.0:
             action_norm = action_norm + torch.randn_like(action_norm) * exploration_noise
@@ -966,9 +968,15 @@ def normalize_exploration_mode(mode: object) -> str:
 
 
 def soft_update(source: nn.Module, target: nn.Module, tau: float) -> None:
+    """Polyak-average target parameters toward source: target = (1 - tau) * target + tau * source."""
+    # source is the freshly updated critic 
+    # and target is the slower target critic
     with torch.no_grad():
-        for source_param, target_param in zip(source.parameters(), target.parameters()):
-            target_param.data.mul_(1.0 - tau).add_(source_param.data, alpha=tau)
+        source_params = list(source.parameters())
+        target_params = list(target.parameters())
+        if not target_params:
+            return
+        torch._foreach_lerp_(target_params, source_params, tau)
 
 
 def make_writer(run_dir: Path):
