@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 import torch
 from torch import nn
 from torch.distributions import Independent, Normal
 
 from ball_rssm.models.networks import build_mlp, softplus_std
+
+if TYPE_CHECKING:
+    from ball_rssm.models.rssm import RSSMState
+    from ball_rssm.models.world_model import WorldModel
 
 
 @dataclass
@@ -198,6 +203,19 @@ class Critic(DenseDecoder):
     """Compatibility name for the Dreamer scalar value model."""
 
 
+@contextmanager
+def freeze_parameters(*modules: nn.Module) -> Iterator[None]:
+    params = [param for module in modules for param in module.parameters()]
+    previous = [param.requires_grad for param in params]
+    try:
+        for param in params:
+            param.requires_grad_(False)
+        yield
+    finally:
+        for param, requires_grad in zip(params, previous):
+            param.requires_grad_(requires_grad)
+
+
 def normalize_value_dist(name: object) -> str:
     normalized = str(name).lower().strip()
     if normalized in {"normal", "gaussian", "fixed_normal", "fixed-std-normal"}:
@@ -214,6 +232,172 @@ def value_loss(pred: torch.Tensor, target: torch.Tensor, dist_name: str) -> torc
     if dist_name == "mse":
         return (pred - target) ** 2
     return -Independent(Normal(pred, 1.0), 1).log_prob(target).unsqueeze(-1)
+
+
+def dreamer_actor_loss_from_start(
+    world_model: "WorldModel",
+    critic: Critic,
+    imagine: Any,
+    start: "RSSMState",
+    discount: float,
+    lambda_: float,
+    actor_entropy_scale: float,
+    actor_gradient: str,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Imagine from posterior starts and compute the full Dreamer actor loss."""
+
+    with freeze_parameters(world_model, critic):
+        # V1 uses Dreamer dynamics backpropagation through imagined model
+        # rollouts. V2 can switch to a score-function policy gradient.
+        states, _, entropy, log_prob = imagine(
+            start,
+            deterministic=False,
+            actor_gradient=actor_gradient,
+        )
+        features = world_model.features_from_sequence(states)
+        reward = world_model.predict_reward_sequence(states)
+        continuation = world_model.predict_continuation_sequence(states)
+        value = critic(features)
+        return dreamer_actor_loss(
+            reward=reward,
+            continuation=continuation,
+            value=value,
+            entropy=entropy,
+            log_prob=log_prob,
+            discount=discount,
+            lambda_=lambda_,
+            actor_entropy_scale=actor_entropy_scale,
+            actor_gradient=actor_gradient,
+        )
+
+
+def dreamer_critic_loss_from_start(
+    world_model: "WorldModel",
+    critic: Critic,
+    target_critic: Critic,
+    imagine: Any,
+    start: "RSSMState",
+    discount: float,
+    lambda_: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Imagine from posterior starts and compute the full Dreamer critic loss."""
+
+    with torch.no_grad():
+        # The critic learns the same imagined TD(lambda) returns that drive the
+        # actor, using a slowly updated target critic for the bootstrap.
+        states, _, _, _ = imagine(start, deterministic=False)
+        features = world_model.features_from_sequence(states)
+        reward = world_model.predict_reward_sequence(states)
+        continuation = world_model.predict_continuation_sequence(states)
+        target_value = target_critic(features)
+        returns, weights = dreamer_critic_targets(
+            reward=reward,
+            continuation=continuation,
+            target_value=target_value,
+            discount=discount,
+            lambda_=lambda_,
+        )
+        features = features[:, :-1].detach()
+
+    pred = critic(features)
+    return dreamer_critic_loss(
+        pred=pred,
+        returns=returns,
+        weights=weights,
+        value_head_dist=critic.config.value_head_dist,
+    )
+
+
+def dreamer_actor_loss(
+    reward: torch.Tensor,
+    continuation: torch.Tensor,
+    value: torch.Tensor,
+    entropy: torch.Tensor,
+    log_prob: torch.Tensor,
+    discount: float,
+    lambda_: float,
+    actor_entropy_scale: float,
+    actor_gradient: str,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute Dreamer actor loss from imagined rewards, values, and action stats."""
+
+    pcont = discount * continuation
+    returns = compute_return(
+        reward[:, :-1].transpose(0, 1),
+        value[:, :-1].transpose(0, 1),
+        pcont[:, :-1].transpose(0, 1),
+        lambda_,
+        value[:, -1],
+    ).transpose(0, 1)
+    weights = discount_weights(pcont[:, :-1]).detach()
+    entropy_bonus = entropy[:, :-1].mean()
+    if actor_gradient in {"reinforce", "both"}:
+        advantage = (returns - value[:, :-1]).detach()
+        reinforce_objective = (weights * log_prob[:, :-1] * advantage).mean()
+    else:
+        reinforce_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
+    if actor_gradient in {"dynamics", "both"}:
+        dynamics_objective = (weights * returns).mean()
+    else:
+        dynamics_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
+
+    objective = reinforce_objective + dynamics_objective
+    imagined_return_objective = (weights * returns.detach()).mean()
+    loss = -objective - actor_entropy_scale * entropy_bonus
+    metrics = {
+        "actor_loss": loss.detach(),
+        "actor_objective": objective.detach(),
+        "actor_imagined_return_objective": imagined_return_objective.detach(),
+        "actor_dynamics_objective": dynamics_objective.detach(),
+        "actor_reinforce_objective": reinforce_objective.detach(),
+        "actor_entropy": entropy_bonus.detach(),
+        "actor_gradient_reinforce": torch.as_tensor(float(actor_gradient == "reinforce"), device=returns.device),
+        "actor_gradient_both": torch.as_tensor(float(actor_gradient == "both"), device=returns.device),
+        "imagined_reward_mean": reward.detach().mean(),
+        "imagined_continue_mean": continuation.detach().mean(),
+    }
+    return loss, metrics
+
+
+def dreamer_critic_targets(
+    reward: torch.Tensor,
+    continuation: torch.Tensor,
+    target_value: torch.Tensor,
+    discount: float,
+    lambda_: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute TD(lambda) critic targets and discount weights from imagined rollouts."""
+
+    pcont = discount * continuation
+    returns = compute_return(
+        reward[:, :-1].transpose(0, 1),
+        target_value[:, :-1].transpose(0, 1),
+        pcont[:, :-1].transpose(0, 1),
+        lambda_,
+        target_value[:, -1],
+    ).transpose(0, 1)
+    weights = discount_weights(pcont[:, :-1]).detach()
+    return returns.detach(), weights
+
+
+def dreamer_critic_loss(
+    pred: torch.Tensor,
+    returns: torch.Tensor,
+    weights: torch.Tensor,
+    value_head_dist: str,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute Dreamer critic loss against imagined TD(lambda) targets."""
+
+    per_step_loss = value_loss(pred, returns, value_head_dist)
+    value_mse = (pred - returns) ** 2
+    loss = (weights * per_step_loss).mean()
+    metrics = {
+        "critic_loss": loss.detach(),
+        "critic_mse": (weights * value_mse).mean().detach(),
+        "critic_value_mean": pred.detach().mean(),
+        "critic_target_mean": returns.detach().mean(),
+    }
+    return loss, metrics
 
 
 def compute_return(

@@ -9,8 +9,6 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
-from ball_rssm.stream_replay import StreamReplay
-
 DMObsType = Literal["state", "pixel"]
 
 
@@ -221,62 +219,6 @@ def preprocess_pixel_frame(frame: np.ndarray) -> np.ndarray:
     if frame.ndim != 3 or frame.shape[-1] != 3:
         raise ValueError("pixel frame must have shape [height, width, 3]")
     return np.moveaxis(frame.astype(np.float32) / 255.0 - 0.5, -1, 0)
-
-
-def collect_random_dm_control(
-    config: DMControlConfig,
-    num_episodes: int,
-    max_episode_steps: int,
-    seed: int,
-) -> dict[str, np.ndarray]:
-    """Collect random-policy DM-Control replay in the project NPZ schema."""
-
-    if num_episodes <= 0:
-        raise ValueError("num_episodes must be positive")
-    if max_episode_steps <= 0:
-        raise ValueError("max_episode_steps must be positive")
-
-    base_env = DMControlEnv(config, seed=seed)
-    env = NormalizeActionWrapper(base_env)
-    rng = np.random.default_rng(seed)
-    replay = StreamReplay(
-        capacity_steps=max(num_episodes * (max_episode_steps + 1), 1),
-        obs_shape=env.obs_shape,
-        action_shape=env.action_shape,
-        max_episode_steps=max_episode_steps,
-        action_low=env.action_low,
-        action_high=env.action_high,
-        metadata={
-            "action_normalization": "dm_control_normalized",
-            "pixel_preprocessing": "uint8_div255_minus_0.5",
-            "real_action_low": env.real_action_low,
-            "real_action_high": env.real_action_high,
-        },
-    )
-    driver = DMControlDriver(env, replay, max_episode_steps=max_episode_steps)
-
-    try:
-        driver.run(lambda _obs, _is_first: env.sample_random_action(rng), num_episodes)
-    finally:
-        env.close()
-
-    return {
-        **replay.to_dataset(),
-        "action_low": env.action_low,
-        "action_high": env.action_high,
-        "real_action_low": env.real_action_low,
-        "real_action_high": env.real_action_high,
-        "action_normalization": np.asarray("dm_control_normalized"),
-        "pixel_preprocessing": np.asarray("uint8_div255_minus_0.5"),
-        "obs_type": np.asarray(config.obs_type),
-        "domain": np.asarray(config.domain),
-        "task": np.asarray(config.task),
-        "action_repeat": np.asarray(config.action_repeat, dtype=np.int32),
-        "height": np.asarray(config.height, dtype=np.int32),
-        "width": np.asarray(config.width, dtype=np.int32),
-        "camera_id": np.asarray(config.camera_id, dtype=np.int32),
-        "obs_keys": np.asarray(env.obs_keys),
-    }
 
 
 def save_dm_control_dataset(path: str | Path, arrays: dict[str, np.ndarray]) -> None:

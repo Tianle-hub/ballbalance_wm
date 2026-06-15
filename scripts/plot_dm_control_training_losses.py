@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -29,6 +30,22 @@ CURVES = {
     "return": ("collect_avg_reward", "Return"),
 }
 
+LEGACY_LOG_NAMES = ("train.log", "stdout.log", "output.log")
+LEGACY_ITER_RE = re.compile(r"\biter=(?P<step>\d+)\s+(?P<body>.*)")
+LEGACY_PAIR_RE = re.compile(r"(?P<key>[A-Za-z0-9_]+)=(?P<value>-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)")
+LEGACY_KEY_MAP = {
+    "train": "train/total_loss",
+    "val": "val/total_loss",
+    "recon": "val/recon_loss",
+    "reward": "val/reward_loss",
+    "kl": "val/kl_loss",
+    "actor": "val/actor_loss",
+    "critic": "val/critic_loss",
+    "collect_reward": "collect/collect_avg_reward",
+    "replay_episodes": "collect/replay_episodes",
+    "explore": "collect/exploration_noise",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -41,11 +58,30 @@ def parse_args() -> argparse.Namespace:
 def load_metrics(run_dir: Path) -> list[dict[str, float]]:
     path = run_dir / "metrics.jsonl"
     if not path.exists():
-        return []
+        return load_legacy_logs(run_dir)
     rows_by_step: dict[int, dict[str, float]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             row = json.loads(line)
+            rows_by_step[int(row["step"])] = row
+    return [rows_by_step[step] for step in sorted(rows_by_step)]
+
+
+def load_legacy_logs(run_dir: Path) -> list[dict[str, float]]:
+    rows_by_step: dict[int, dict[str, float]] = {}
+    for name in LEGACY_LOG_NAMES:
+        path = run_dir / name
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = LEGACY_ITER_RE.search(line)
+            if match is None:
+                continue
+            row: dict[str, float] = {"step": float(match.group("step"))}
+            for pair in LEGACY_PAIR_RE.finditer(match.group("body")):
+                key = LEGACY_KEY_MAP.get(pair.group("key"))
+                if key is not None:
+                    row[key] = float(pair.group("value"))
             rows_by_step[int(row["step"])] = row
     return [rows_by_step[step] for step in sorted(rows_by_step)]
 
@@ -104,7 +140,7 @@ def main() -> None:
     run_rows = {Path(run).name: load_metrics(Path(run)) for run in args.runs}
     missing = [name for name, rows in run_rows.items() if not rows]
     if missing:
-        print("No metrics.jsonl for:", ", ".join(missing))
+        print("No metrics.jsonl or legacy train/stdout/output log for:", ", ".join(missing))
 
     wrote = []
     for metric_name, (metric_key, title) in CURVES.items():

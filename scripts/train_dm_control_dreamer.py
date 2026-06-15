@@ -15,17 +15,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ball_rssm.buffer import InitialStateBounds
-from ball_rssm.envs.dm_control import (
-    DMControlConfig,
-    DMControlDriver,
-    DMControlEnv,
-    NormalizeActionWrapper,
-    collect_random_dm_control,
-)
+from ball_rssm.envs.dm_control import DMControlConfig
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
-from ball_rssm.models.rssm import RSSMState
-from ball_rssm.stream_replay import StreamReplay
-from ball_rssm.trainer import DreamerTrainConfig, Trainer
+from ball_rssm.stream_replay import StreamReplay, collect_random_dm_control
+from ball_rssm.trainer import DMControlTrainer, DreamerTrainConfig
 from ball_rssm.utils.checkpoint import load_checkpoint
 from ball_rssm.utils.seed import set_seed
 from scripts.train_dreamer import find_resume_checkpoint
@@ -42,83 +35,6 @@ def parse_int_tuple(value: str) -> tuple[int, ...]:
     if any(item <= 0 for item in parsed):
         raise argparse.ArgumentTypeError("all integer tuple values must be positive")
     return parsed
-
-
-class DMControlTrainer(Trainer):
-    """Trainer with DM-Control actor collection instead of BallBalanceEnv collection."""
-
-    def __init__(self, *args: Any, dm_config: DMControlConfig, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.dm_config = dm_config
-
-    def collect_actor_episodes(
-        self,
-        num_episodes: int,
-        max_episode_steps: int,
-        seed: int,
-        initial_bounds: InitialStateBounds = InitialStateBounds(),
-        exploration_noise: float = 0.0,
-        configured_exploration_noise: float | None = None,
-    ) -> dict[str, float]:
-        del initial_bounds
-        if configured_exploration_noise is None:
-            configured_exploration_noise = exploration_noise
-        if num_episodes <= 0:
-            return {
-                "collect_avg_reward": float("nan"),
-                "collect_max_reward": float("nan"),
-                "collect_min_reward": float("nan"),
-                "collect_avg_length": float("nan"),
-                "collect_episodes": 0.0,
-                "replay_episodes": float(self.buffer.size),
-                "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
-                "exploration_noise": float(exploration_noise),
-                "configured_exploration_noise": float(configured_exploration_noise),
-            }
-        if max_episode_steps != self.buffer.max_episode_steps:
-            raise ValueError("collector max_episode_steps must match replay buffer")
-
-        env = NormalizeActionWrapper(DMControlEnv(self.dm_config, seed=seed))
-        driver = DMControlDriver(env, self.buffer, max_episode_steps=max_episode_steps)
-        was_world_training = self.world_model.training
-        was_actor_training = self.actor.training
-        self.world_model.eval()
-        self.actor.eval()
-        state: RSSMState | None = None
-        prev_action = np.zeros(env.action_shape, dtype=np.float32)
-
-        def policy(obs: np.ndarray, is_first: bool) -> np.ndarray:
-            nonlocal state, prev_action
-            if state is None or is_first:
-                state = self.world_model.initial_state(1, self.device)
-                prev_action = np.zeros(env.action_shape, dtype=np.float32)
-            assert state is not None
-            state = self._posterior_update_np(state, obs, prev_action, is_first=is_first)
-            with torch.no_grad():
-                action = self._sample_actor_action_norm(state, exploration_noise).reshape(env.action_shape)
-            action_np = action.detach().cpu().numpy().astype(np.float32)
-            action_np = np.clip(action_np, env.action_low, env.action_high)
-            prev_action = action_np
-            return action_np
-
-        try:
-            driver_metrics = driver.run(policy, num_episodes)
-        finally:
-            env.close()
-            self.world_model.train(was_world_training)
-            self.actor.train(was_actor_training)
-
-        return {
-            "collect_avg_reward": driver_metrics["avg_reward"],
-            "collect_max_reward": driver_metrics["max_reward"],
-            "collect_min_reward": driver_metrics["min_reward"],
-            "collect_avg_length": driver_metrics["avg_length"],
-            "collect_episodes": float(num_episodes),
-            "replay_episodes": float(self.buffer.size),
-            "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
-            "exploration_noise": float(exploration_noise),
-            "configured_exploration_noise": float(configured_exploration_noise),
-        }
 
 
 def main() -> None:

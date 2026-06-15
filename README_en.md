@@ -1,26 +1,26 @@
 # DM-Control Dreamer V1/V2
 
-PyTorch-Implementierung von Dreamer für Aufgaben aus der DeepMind Control Suite. Derselbe Code unterstützt:
+PyTorch Dreamer implementation for DeepMind Control Suite tasks. The same code supports:
 
-- Kontinuierliche Gaußsche RSSM-Latents im Stil von Dreamer V1.
-- Straight-through kategorische RSSM-Latents mit KL-Balancing im Stil von Dreamer V2.
-- Zustandsbeobachtungen aus DM-Control-Observation-Dictionaries.
-- Pixelbeobachtungen, die aus MuJoCo-Kameras gerendert werden.
+- Dreamer V1 style continuous Gaussian RSSM latents.
+- Dreamer V2 style straight-through categorical RSSM latents with KL balancing.
+- State observations from DM-Control observation dictionaries.
+- Pixel observations rendered from MuJoCo cameras.
 
-Die ursprüngliche Ball-Balance-Umgebung ist weiterhin vorhanden, aber dieser Branch ist auf DM-Control ausgerichtet.
+The original ball-balance environment is still available, but this branch is oriented around DM-Control.
 
-Das DM-Control-Training nutzt eine driver-artige Online-Schleife: Aktionen werden in `[-1, 1]` gesampelt, durch einen Wrapper auf die echte DM-Control-Action-Spezifikation abgebildet, mit `is_first`-Reset-Markern in ein Step-Stream-Replay geschrieben und anschließend als zusammenhängende Sequenzfenster für das RSSM-Training gesampelt.
+DM-Control training uses a driver-style online loop: actions are sampled in `[-1, 1]`, mapped to the real DM-Control action spec by a wrapper, written into a step-stream replay with `is_first` reset markers, and sampled as contiguous sequence windows for RSSM training.
 
-## Installation
+## Install
 
-Verwende in diesem Workspace Python 3.12 für DM-Control. Die bestehende Python-3.13-`.venv` kann dazu führen, dass `labmaze` auf einen Bazel-Source-Build zurückfällt.
+Use Python 3.12 for DM-Control in this workspace. The existing Python 3.13 `.venv` can make `labmaze` fall back to a Bazel source build.
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv venv --python /usr/bin/python3.12 .venv-dm-control
 UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv-dm-control/bin/python -e ".[dm-control,dev]"
 ```
 
-Smoke-Test für die Umgebung:
+Smoke-test the environment:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_env.py \
@@ -29,7 +29,7 @@ Smoke-Test für die Umgebung:
   --steps 20
 ```
 
-Auf headless Maschinen kannst du EGL fürs Rendering verwenden:
+On headless machines, use EGL for rendering:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_env.py \
@@ -40,9 +40,9 @@ Auf headless Maschinen kannst du EGL fürs Rendering verwenden:
   --frames-out outputs/smoke/cartpole
 ```
 
-## Dreamer V1 Trainieren
+## Train Dreamer V1
 
-Starte mit Zustandsbeobachtungen. Das ist der schnellste Weg, um World Model, Actor, Critic, Replay und Checkpointing-Schleife zu prüfen.
+Start with state observations. This is the quickest way to verify the world model, actor, critic, replay, and checkpointing loop.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -62,16 +62,16 @@ Starte mit Zustandsbeobachtungen. Das ist der schnellste Weg, um World Model, Ac
   --imagination-horizon 15
 ```
 
-Checkpoints und Replay werden hier geschrieben:
+Checkpoints and replay are written under:
 
 ```text
 runs/dmc_cartpole_swingup_v1/checkpoints/
 runs/dmc_cartpole_swingup_v1/replay/latest.npz
 ```
 
-## Dreamer V2 Trainieren
+## Train Dreamer V2
 
-V2 nutzt den kategorischen RSSM-Pfad. Für kontinuierliche DM-Control-Aktionen wird `--actor-gradient auto` zu Dynamics-Gradienten aufgelöst; `--exploration-mode auto` wird für V2 zu Policy-Entropy-Sampling.
+V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-gradient auto` resolves to dynamics gradients; `--exploration-mode auto` resolves to policy-entropy sampling for V2.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -99,18 +99,18 @@ V2 nutzt den kategorischen RSSM-Pfad. Für kontinuierliche DM-Control-Aktionen w
   --imagination-horizon 15
 ```
 
-Für schwierigere V2-Aufgaben, besonders Pixel- oder Lokomotionsaufgaben, probiere die referenzorientierten Stabilitätsoptionen:
+For harder V2 tasks, especially pixels or locomotion, try the reference-oriented stability knobs:
 
 ```bash
   --layer-norm \
   --rssm-ensemble 5
 ```
 
-## Pixel-Training
+## Pixel Training
 
-Pixelbeobachtungen verwenden `WorldModelConfig(obs_type="pixel")`, `ConvEncoder` und `ConvDecoder`. Im Stream-Replay werden Bildbeobachtungen als `[1, stream_time, channels, height, width]` mit `is_first`-Markern an Episodengrenzen gespeichert. Gerenderte Frames werden als `image / 255.0 - 0.5` vorverarbeitet; die Pixel-Observation-Normalisierung bleibt die Identität.
+Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. In stream replay, image observations are stored as `[1, stream_time, channels, height, width]` with `is_first` markers at episode boundaries. Rendered frames are preprocessed as `image / 255.0 - 0.5`, and pixel observation normalization is left as identity.
 
-Die Standard-Pixelarchitektur nutzt Dreamer-artige CNN-Optionen: Encoder-Kernels `4,4,4,4`, Decoder-Kernels `5,5,6,6` und `cnn_depth=48`. Dadurch werden `64x64`-Bilder von `1x1` zurück auf `64x64` dekodiert.
+The default pixel architecture uses Dreamer-style CNN knobs: encoder kernels `4,4,4,4`, decoder kernels `5,5,6,6`, and `cnn_depth=48`, so `64x64` images decode from `1x1` back to `64x64`.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -137,7 +137,7 @@ Die Standard-Pixelarchitektur nutzt Dreamer-artige CNN-Optionen: Encoder-Kernels
   --imagination-horizon 15
 ```
 
-Pixel-Training ist deutlich schwerer als State-Training. Verwende zuerst eine kleine `--batch-size`.
+Pixel training is much heavier than state training. Use small `--batch-size` first.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -171,35 +171,36 @@ Pixel-Training ist deutlich schwerer als State-Training. Verwende zuerst eine kl
   --imagination-horizon 15
 ```
 
-## Trainingsmetriken Und Loss-Plots
+## Training Metrics And Loss Plots
 
-Das Online-DM-Control-Training schreibt pro Iteration einen JSON-Datensatz nach:
+Online DM-Control training writes one JSON record per iteration to:
 
 ```text
 runs/<run-name>/metrics.jsonl
 ```
 
-Das Log enthält Train- und Validation-Losses für World Model und Behavior-Heads, Open-Loop-Validation-Losses, Replay-Größe, Exploration-Einstellungen und den gesammelten Return. Es wird auch geschrieben, wenn TensorBoard nicht installiert ist.
+The log includes train and validation losses for the world model and behavior heads, open-loop validation losses, replay size, exploration settings, and the collected return. It is written even when TensorBoard is not installed.
 
-Nach dem Training kannst du die vier Standard-Cartpole-Runs plotten mit:
+After training, plot the four standard cartpole runs with:
 
 ```bash
 .venv-dm-control/bin/python scripts/plot_dm_control_training_losses.py
 ```
 
-Die Plots werden hier gespeichert:
+The plots are written to:
 
 ```text
 runs/dm_control_loss_plots/
 ```
 
-Das Plot-Skript erzeugt jeweils eine Abbildung für Reconstruction-Loss, Reward-Loss, KL-Loss, Actor-Loss, Critic-Loss und Return. Jede Abbildung hat Train- und Validation-Subplots; Return wird aus der Online-Collection als `collect/collect_avg_reward` geloggt.
+The plotting script creates one figure each for reconstruction loss, reward loss, KL loss, actor loss, critic loss, and return. Each figure has train and validation subplots; return is logged from online collection as `collect/collect_avg_reward`.
 
-Ältere Runs ohne `metrics.jsonl` können vollständige Kurven nicht allein aus Checkpoints rekonstruieren. Wenn du Terminalausgabe gespeichert hast, lege sie im Run-Verzeichnis als `train.log`, `stdout.log` oder `output.log` ab; das Plot-Skript parst Zeilen wie `iter=100 train=... val=... recon=...`.
+Older runs that do not have `metrics.jsonl` cannot reconstruct full curves from checkpoints alone. If you saved terminal output, place it in the run directory as `train.log`, `stdout.log`, or `output.log`; the plotting script will parse lines like `iter=100 train=... val=... recon=...`.
 
-## Checkpoint Evaluieren
 
-Evaluation ohne Rendering:
+## Evaluate A Checkpoint
+
+Evaluate without rendering:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
@@ -209,7 +210,7 @@ Evaluation ohne Rendering:
   --device cpu
 ```
 
-Trainierte Policy online in der DM-Control-Umgebung ausführen und gerenderte Frames plus GIF speichern:
+Run the trained policy online in the DM-Control environment and save rendered frames plus a GIF:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
@@ -222,8 +223,7 @@ Trainierte Policy online in der DM-Control-Umgebung ausführen und gerenderte Fr
   --gif-out outputs/dmc_cartpole_swingup_v1_0614.gif \
   --device cpu
 ```
-
-V2-Checkpoint evaluieren:
+Evaluate a V2 checkpoint:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
@@ -237,7 +237,7 @@ V2-Checkpoint evaluieren:
   --device cpu
 ```
 
-V2-Pixel-Checkpoint evaluieren:
+Evaluate a V2 pixel checkpoint:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
@@ -251,11 +251,11 @@ V2-Pixel-Checkpoint evaluieren:
   --device cpu
 ```
 
-Der Policy-Runner leitet `domain`, `task`, `obs_type`, Bildgröße, Kamera und Action-Repeat aus dem Checkpoint ab, wenn der Checkpoint mit `scripts/train_dm_control_dreamer.py` erzeugt wurde. Du kannst diese Werte bei Bedarf mit CLI-Flags überschreiben.
+The policy runner infers `domain`, `task`, `obs_type`, image size, camera, and action repeat from the checkpoint when the checkpoint was produced by `scripts/train_dm_control_dreamer.py`. Override them with CLI flags if needed.
 
-## Nur Zufälliges Replay
+## Random Replay Only
 
-Zum Debuggen von Offline-World-Model-Training oder zum Prüfen von Dataset-Shapes:
+For debugging offline world-model training or inspecting dataset shapes:
 
 ```bash
 .venv-dm-control/bin/python scripts/collect_dm_control_dataset.py \
@@ -267,7 +267,7 @@ Zum Debuggen von Offline-World-Model-Training oder zum Prüfen von Dataset-Shape
   --out data/dmc_walker_walk_random_state.npz
 ```
 
-Danach kannst du mit dem DM-Control-Trainer aus diesem Replay trainieren:
+Then train from that replay with the DM-Control trainer:
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -284,6 +284,6 @@ Danach kannst du mit dem DM-Control-Trainer aus diesem Replay trainieren:
   --batch-size 128
 ```
 
-## Implementierungsnotizen
+## Implementation Notes
 
-Siehe [docs/implementation.md](docs/implementation.md) für Unterschiede zu Danijar Hafners lokalen Dreamer-V1/V2-Referenzimplementierungen und für wahrscheinliche Punkte, auf die du beim Skalieren dieser Implementierung achten solltest.
+See [docs/implementation.md](docs/implementation.md) for differences from Danijar Hafner's local Dreamer V1/V2 reference implementations and likely issues to watch while scaling this implementation.

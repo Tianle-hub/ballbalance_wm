@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from ball_rssm.envs.dm_control import DMControlConfig
 
 
 class StreamReplay:
@@ -213,7 +216,10 @@ class StreamReplay:
 
     def sequence_dataset(self, seq_len: int, split: str = "train", val_fraction: float = 0.1, seed: int = 0, **_: Any):
         from ball_rssm.data.sequence_dataset import SequenceDataset
-
+        # SequenceDataset turns the step stream into fixed-length training
+        # windows: obs[start:start+seq_len+1] plus the aligned action/reward/done
+        # records for obs[t] + action[t] -> obs[t + 1]. It also applies the
+        # train/val episode split and carries is_first reset markers into batches.
         return SequenceDataset(self.to_dataset(), seq_len=seq_len, split=split, val_fraction=val_fraction, seed=seed)
 
     def selected_arrays(self, episode_indices: np.ndarray | None = None):
@@ -279,3 +285,61 @@ class StreamReplay:
             self.terminated.pop(0)
             self.truncated.pop(0)
             self.done.pop(0)
+
+
+def collect_random_dm_control(
+    config: "DMControlConfig",
+    num_episodes: int,
+    max_episode_steps: int,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    """Collect random-policy DM-Control replay in the project NPZ schema."""
+
+    if num_episodes <= 0:
+        raise ValueError("num_episodes must be positive")
+    if max_episode_steps <= 0:
+        raise ValueError("max_episode_steps must be positive")
+
+    from ball_rssm.envs.dm_control import DMControlDriver, DMControlEnv, NormalizeActionWrapper
+
+    base_env = DMControlEnv(config, seed=seed)
+    env = NormalizeActionWrapper(base_env)
+    rng = np.random.default_rng(seed)
+    replay = StreamReplay(
+        capacity_steps=max(num_episodes * (max_episode_steps + 1), 1),
+        obs_shape=env.obs_shape,
+        action_shape=env.action_shape,
+        max_episode_steps=max_episode_steps,
+        action_low=env.action_low,
+        action_high=env.action_high,
+        metadata={
+            "action_normalization": "dm_control_normalized",
+            "pixel_preprocessing": "uint8_div255_minus_0.5",
+            "real_action_low": env.real_action_low,
+            "real_action_high": env.real_action_high,
+        },
+    )
+    driver = DMControlDriver(env, replay, max_episode_steps=max_episode_steps)
+
+    try:
+        driver.run(lambda _obs, _is_first: env.sample_random_action(rng), num_episodes)
+    finally:
+        env.close()
+
+    return {
+        **replay.to_dataset(),
+        "action_low": env.action_low,
+        "action_high": env.action_high,
+        "real_action_low": env.real_action_low,
+        "real_action_high": env.real_action_high,
+        "action_normalization": np.asarray("dm_control_normalized"),
+        "pixel_preprocessing": np.asarray("uint8_div255_minus_0.5"),
+        "obs_type": np.asarray(config.obs_type),
+        "domain": np.asarray(config.domain),
+        "task": np.asarray(config.task),
+        "action_repeat": np.asarray(config.action_repeat, dtype=np.int32),
+        "height": np.asarray(config.height, dtype=np.int32),
+        "width": np.asarray(config.width, dtype=np.int32),
+        "camera_id": np.asarray(config.camera_id, dtype=np.int32),
+        "obs_keys": np.asarray(env.obs_keys),
+    }

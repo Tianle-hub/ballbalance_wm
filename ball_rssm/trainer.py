@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 import torch
@@ -17,8 +15,14 @@ from tqdm import tqdm
 from ball_rssm.buffer import Buffer, InitialStateBounds, sample_initial_state
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.envs import BallBalanceEnv
+from ball_rssm.envs.dm_control import (
+    DMControlConfig,
+    DMControlDriver,
+    DMControlEnv,
+    NormalizeActionWrapper,
+)
 from ball_rssm.models import Actor, Critic, Normalizer, WorldModel
-from ball_rssm.models.behavior import compute_return, discount_weights, value_loss
+from ball_rssm.models.behavior import dreamer_actor_loss_from_start, dreamer_critic_loss_from_start
 from ball_rssm.models.rssm import RSSMState, stack_states
 from ball_rssm.utils.checkpoint import save_checkpoint
 
@@ -366,13 +370,31 @@ class Trainer:
 
         # DreamerV1 trains policy and value in the same loop as dynamics; there
         # is no separate planning module or post-hoc action-sequence optimizer.
-        actor_loss, actor_metrics = self.actor_loss(start)
+
+        actor_loss, actor_metrics = dreamer_actor_loss_from_start(
+            world_model=self.world_model,
+            critic=self.critic,
+            imagine=self.imagine,
+            start=start,
+            discount=self.config.discount,
+            lambda_=self.config.lambda_,
+            actor_entropy_scale=self.config.actor_entropy_scale,
+            actor_gradient=self.actor_gradient,
+        )
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         actor_grad = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.grad_clip)
         self.actor_optimizer.step()
 
-        critic_loss, critic_metrics = self.critic_loss(start)
+        critic_loss, critic_metrics = dreamer_critic_loss_from_start(
+            world_model=self.world_model,
+            critic=self.critic,
+            target_critic=self.target_critic,
+            imagine=self.imagine,
+            start=start,
+            discount=self.config.discount,
+            lambda_=self.config.lambda_,
+        )
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         critic_grad = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.grad_clip)
@@ -403,8 +425,25 @@ class Trainer:
         assert isinstance(posterior, dict)
         full_start = flatten_state_sequence(posterior, drop_last=True)
         start = sample_state_batch(full_start, self.config.behavior_batch_size)
-        actor_loss, actor_metrics = self.actor_loss(start)
-        critic_loss, critic_metrics = self.critic_loss(start)
+        actor_loss, actor_metrics = dreamer_actor_loss_from_start(
+            world_model=self.world_model,
+            critic=self.critic,
+            imagine=self.imagine,
+            start=start,
+            discount=self.config.discount,
+            lambda_=self.config.lambda_,
+            actor_entropy_scale=self.config.actor_entropy_scale,
+            actor_gradient=self.actor_gradient,
+        )
+        critic_loss, critic_metrics = dreamer_critic_loss_from_start(
+            world_model=self.world_model,
+            critic=self.critic,
+            target_critic=self.target_critic,
+            imagine=self.imagine,
+            start=start,
+            discount=self.config.discount,
+            lambda_=self.config.lambda_,
+        )
         metrics = dict(metrics)
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
@@ -415,99 +454,6 @@ class Trainer:
         metrics["critic_grad_norm"] = torch.zeros((), device=obs.device)
         metrics["total_loss"] = world_loss.detach()
         return metrics
-
-    def actor_loss(self, start: RSSMState) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        with freeze_parameters(self.world_model, self.critic):
-            # V1 uses Dreamer dynamics backpropagation through imagined model
-            # rollouts. V2 can switch to a score-function policy gradient.
-            states, _, entropy, log_prob = self.imagine(
-                start,
-                deterministic=False,
-                actor_gradient=self.actor_gradient,
-            )
-            features = self.world_model.features_from_sequence(states)
-            reward = self.world_model.predict_reward_sequence(states)
-            continuation = self.world_model.predict_continuation_sequence(states)
-            pcont = self.config.discount * continuation
-            value = self.critic(features)
-            returns = compute_return(
-                reward[:, :-1].transpose(0, 1),
-                value[:, :-1].transpose(0, 1),
-                pcont[:, :-1].transpose(0, 1),
-                self.config.lambda_,
-                value[:, -1],
-            ).transpose(0, 1)
-            weights = discount_weights(pcont[:, :-1]).detach()
-            entropy_bonus = entropy[:, :-1].mean()
-            if self.actor_gradient in {"reinforce", "both"}:
-                advantage = (returns - value[:, :-1]).detach()
-                reinforce_objective = (weights * log_prob[:, :-1] * advantage).mean()
-            else:
-                reinforce_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
-            if self.actor_gradient in {"dynamics", "both"}:
-                dynamics_objective = (weights * returns).mean()
-            else:
-                dynamics_objective = torch.zeros((), device=returns.device, dtype=returns.dtype)
-
-            # Actor gradient modes:
-            # - reinforce: score-function objective only.
-            # - dynamics: pathwise/dynamics backpropagation objective only.
-            # - both: DreamerV2 Eq. 6 style mixture of both terms.
-            objective = reinforce_objective + dynamics_objective
-            imagined_return_objective = (weights * returns.detach()).mean()
-            loss = -objective - self.config.actor_entropy_scale * entropy_bonus
-        metrics = {
-            "actor_loss": loss.detach(),
-            "actor_objective": objective.detach(),
-            "actor_imagined_return_objective": imagined_return_objective.detach(),
-            "actor_dynamics_objective": dynamics_objective.detach(),
-            "actor_reinforce_objective": reinforce_objective.detach(),
-            "actor_entropy": entropy_bonus.detach(),
-            "actor_gradient_reinforce": torch.as_tensor(
-                float(self.actor_gradient == "reinforce"),
-                device=start.h.device,
-            ),
-            "actor_gradient_both": torch.as_tensor(
-                float(self.actor_gradient == "both"),
-                device=start.h.device,
-            ),
-            "imagined_reward_mean": reward.detach().mean(),
-            "imagined_continue_mean": continuation.detach().mean(),
-        }
-        return loss, metrics
-
-    def critic_loss(self, start: RSSMState) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        with torch.no_grad():
-            # The critic learns the same imagined TD(lambda) returns that drive
-            # the actor, using a slowly updated target critic for the bootstrap.
-            states, _, _, _ = self.imagine(start, deterministic=False)
-            features = self.world_model.features_from_sequence(states)
-            reward = self.world_model.predict_reward_sequence(states)
-            continuation = self.world_model.predict_continuation_sequence(states)
-            pcont = self.config.discount * continuation
-            target_value = self.target_critic(features)
-            returns = compute_return(
-                reward[:, :-1].transpose(0, 1),
-                target_value[:, :-1].transpose(0, 1),
-                pcont[:, :-1].transpose(0, 1),
-                self.config.lambda_,
-                target_value[:, -1],
-            ).transpose(0, 1)
-            weights = discount_weights(pcont[:, :-1]).detach()
-            features = features[:, :-1].detach()
-            returns = returns.detach()
-
-        pred = self.critic(features)
-        per_step_loss = value_loss(pred, returns, self.critic.config.value_head_dist)
-        value_mse = (pred - returns) ** 2
-        loss = (weights * per_step_loss).mean()
-        metrics = {
-            "critic_loss": loss.detach(),
-            "critic_mse": (weights * value_mse).mean().detach(),
-            "critic_value_mean": pred.detach().mean(),
-            "critic_target_mean": returns.detach().mean(),
-        }
-        return loss, metrics
 
     def imagine(
         self,
@@ -875,6 +821,83 @@ class Trainer:
         )
 
 
+class DMControlTrainer(Trainer):
+    """Trainer with DM-Control actor collection instead of BallBalanceEnv collection."""
+
+    def __init__(self, *args, dm_config: DMControlConfig, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.dm_config = dm_config
+
+    def collect_actor_episodes(
+        self,
+        num_episodes: int,
+        max_episode_steps: int,
+        seed: int,
+        initial_bounds: InitialStateBounds = InitialStateBounds(),
+        exploration_noise: float = 0.0,
+        configured_exploration_noise: float | None = None,
+    ) -> dict[str, float]:
+        del initial_bounds
+        if configured_exploration_noise is None:
+            configured_exploration_noise = exploration_noise
+        if num_episodes <= 0:
+            return {
+                "collect_avg_reward": float("nan"),
+                "collect_max_reward": float("nan"),
+                "collect_min_reward": float("nan"),
+                "collect_avg_length": float("nan"),
+                "collect_episodes": 0.0,
+                "replay_episodes": float(self.buffer.size),
+                "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
+                "exploration_noise": float(exploration_noise),
+                "configured_exploration_noise": float(configured_exploration_noise),
+            }
+        if max_episode_steps != self.buffer.max_episode_steps:
+            raise ValueError("collector max_episode_steps must match replay buffer")
+
+        env = NormalizeActionWrapper(DMControlEnv(self.dm_config, seed=seed))
+        driver = DMControlDriver(env, self.buffer, max_episode_steps=max_episode_steps)
+        was_world_training = self.world_model.training
+        was_actor_training = self.actor.training
+        self.world_model.eval()
+        self.actor.eval()
+        state: RSSMState | None = None
+        prev_action = np.zeros(env.action_shape, dtype=np.float32)
+
+        def policy(obs: np.ndarray, is_first: bool) -> np.ndarray:
+            nonlocal state, prev_action
+            if state is None or is_first:
+                state = self.world_model.initial_state(1, self.device)
+                prev_action = np.zeros(env.action_shape, dtype=np.float32)
+            assert state is not None
+            state = self._posterior_update_np(state, obs, prev_action, is_first=is_first)
+            with torch.no_grad():
+                action = self._sample_actor_action_norm(state, exploration_noise).reshape(env.action_shape)
+            action_np = action.detach().cpu().numpy().astype(np.float32)
+            action_np = np.clip(action_np, env.action_low, env.action_high)
+            prev_action = action_np
+            return action_np
+
+        try:
+            driver_metrics = driver.run(policy, num_episodes)
+        finally:
+            env.close()
+            self.world_model.train(was_world_training)
+            self.actor.train(was_actor_training)
+
+        return {
+            "collect_avg_reward": driver_metrics["avg_reward"],
+            "collect_max_reward": driver_metrics["max_reward"],
+            "collect_min_reward": driver_metrics["min_reward"],
+            "collect_avg_length": driver_metrics["avg_length"],
+            "collect_episodes": float(num_episodes),
+            "replay_episodes": float(self.buffer.size),
+            "exploration_mode_policy_entropy": float(self.exploration_mode == "policy_entropy"),
+            "exploration_noise": float(exploration_noise),
+            "configured_exploration_noise": float(configured_exploration_noise),
+        }
+
+
 def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> RSSMState:
     """Flatten `[batch, time, dim]` RSSM state tensors into one start-state batch."""
 
@@ -933,19 +956,6 @@ def normalize_exploration_mode(mode: object) -> str:
     if normalized in {"auto", "noise", "policy_entropy"}:
         return normalized
     raise ValueError("exploration_mode must be one of: auto, noise, policy_entropy")
-
-
-@contextmanager
-def freeze_parameters(*modules: nn.Module) -> Iterator[None]:
-    params = [param for module in modules for param in module.parameters()]
-    previous = [param.requires_grad for param in params]
-    try:
-        for param in params:
-            param.requires_grad_(False)
-        yield
-    finally:
-        for param, requires_grad in zip(params, previous):
-            param.requires_grad_(requires_grad)
 
 
 def soft_update(source: nn.Module, target: nn.Module, tau: float) -> None:

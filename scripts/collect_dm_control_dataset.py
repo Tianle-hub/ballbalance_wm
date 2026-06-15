@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ball_rssm.envs.dm_control import DMControlConfig, collect_random_dm_control, save_dm_control_dataset
+from ball_rssm.envs.dm_control import DMControlConfig, save_dm_control_dataset
+from ball_rssm.stream_replay import collect_random_dm_control
 
 
 def main() -> None:

@@ -5,7 +5,7 @@ import torch
 from ball_rssm.buffer import Buffer, InitialStateBounds
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.models import Actor, ActorConfig, Critic, CriticConfig, Normalizer, WorldModel, WorldModelConfig
-from ball_rssm.models.behavior import lambda_return
+from ball_rssm.models.behavior import dreamer_actor_loss_from_start, lambda_return
 from ball_rssm.models.rssm import RSSMState
 from ball_rssm.trainer import DreamerTrainConfig, Trainer, sample_state_batch
 
@@ -159,7 +159,16 @@ def test_dreamer_v2_auto_uses_dynamics_for_continuous_actions(tmp_path) -> None:
     )
     start = world_model.initial_state(batch_size=2, device="cpu")
 
-    loss, metrics = trainer.actor_loss(start)
+    loss, metrics = dreamer_actor_loss_from_start(
+        world_model=world_model,
+        critic=critic,
+        imagine=trainer.imagine,
+        start=start,
+        discount=trainer.config.discount,
+        lambda_=trainer.config.lambda_,
+        actor_entropy_scale=trainer.config.actor_entropy_scale,
+        actor_gradient=trainer.actor_gradient,
+    )
     trainer.actor_optimizer.zero_grad(set_to_none=True)
     loss.backward()
 
@@ -213,7 +222,16 @@ def test_actor_gradient_both_keeps_dynamics_and_reinforce_terms(tmp_path) -> Non
     )
     start = world_model.initial_state(batch_size=2, device="cpu")
 
-    loss, metrics = trainer.actor_loss(start)
+    loss, metrics = dreamer_actor_loss_from_start(
+        world_model=world_model,
+        critic=critic,
+        imagine=trainer.imagine,
+        start=start,
+        discount=trainer.config.discount,
+        lambda_=trainer.config.lambda_,
+        actor_entropy_scale=trainer.config.actor_entropy_scale,
+        actor_gradient=trainer.actor_gradient,
+    )
     trainer.actor_optimizer.zero_grad(set_to_none=True)
     loss.backward()
 
