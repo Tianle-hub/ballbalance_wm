@@ -85,6 +85,9 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
   --kl-balance 0.8 \
   --kl-free 0.0 \
   --kl-free-avg \
+  --decoder-dist normal \
+  --reward-head-dist normal \
+  --value-head-dist normal \
   --seed-episodes 20 \
   --buffer-episodes 2000 \
   --max-episode-steps 200 \
@@ -96,9 +99,18 @@ V2 uses the categorical RSSM path. For continuous DM-Control actions, `--actor-g
   --imagination-horizon 15
 ```
 
+For harder V2 tasks, especially pixels or locomotion, try the reference-oriented stability knobs:
+
+```bash
+  --layer-norm \
+  --rssm-ensemble 5
+```
+
 ## Pixel Training
 
 Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and `ConvDecoder`. In stream replay, image observations are stored as `[1, stream_time, channels, height, width]` with `is_first` markers at episode boundaries. Rendered frames are preprocessed as `image / 255.0 - 0.5`, and pixel observation normalization is left as identity.
+
+The default pixel architecture uses Dreamer-style CNN knobs: encoder kernels `4,4,4,4`, decoder kernels `5,5,6,6`, and `cnn_depth=48`, so `64x64` images decode from `1x1` back to `64x64`.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
@@ -107,6 +119,9 @@ Pixel observations use `WorldModelConfig(obs_type="pixel")`, `ConvEncoder`, and 
   --obs-type pixel \
   --height 64 \
   --width 64 \
+  --cnn-depth 48 \
+  --encoder-kernels 4,4,4,4 \
+  --decoder-kernels 5,5,6,6 \
   --camera-id 0 \
   --mujoco-gl egl \
   --run-dir runs/dmc_cartpole_swingup_pixel_v1_0614 \
@@ -131,12 +146,17 @@ Pixel training is much heavier than state training. Use small `--batch-size` fir
   --obs-type pixel \
   --height 64 \
   --width 64 \
+  --cnn-depth 48 \
+  --encoder-kernels 4,4,4,4 \
+  --decoder-kernels 5,5,6,6 \
   --camera-id 0 \
   --mujoco-gl egl \
   --run-dir runs/dmc_cartpole_swingup_pixel_v2_0614 \
   --dreamer-version v2 \
   --stoch-dim 16 \
   --discrete-classes 32 \
+  --layer-norm \
+  --rssm-ensemble 5 \
   --kl-balance 0.8 \
   --kl-free 0.0 \
   --kl-free-avg \
@@ -168,13 +188,40 @@ Run the trained policy online in the DM-Control environment and save rendered fr
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
-  --checkpoint runs/dmc_cartpole_swingup_v1/checkpoints/best.pt \
+  --checkpoint runs/dmc_cartpole_swingup_v1_0614/checkpoints/best.pt \
   --num-episodes 3 \
-  --max-steps 200 \
+  --max-steps 500 \
   --render \
   --mujoco-gl egl \
-  --frames-out outputs/dmc_cartpole_swingup_v1_frames \
-  --gif-out outputs/dmc_cartpole_swingup_v1.gif \
+  --frames-out outputs/dmc_cartpole_swingup_v1_0614 \
+  --gif-out outputs/dmc_cartpole_swingup_v1_0614.gif \
+  --device cpu
+```
+Evaluate a V2 checkpoint:
+
+```bash
+.venv-dm-control/bin/python scripts/run_dm_control_policy.py \
+  --checkpoint runs/dmc_cartpole_swingup_v2_0614/checkpoints/best.pt \
+  --num-episodes 1 \
+  --max-steps 500 \
+  --render \
+  --mujoco-gl egl \
+  --frames-out outputs/dmc_cartpole_swingup_v2_0614 \
+  --gif-out outputs/dmc_cartpole_swingup_v2_0614.gif \
+  --device cpu
+```
+
+Evaluate a V2 pixel checkpoint:
+
+```bash
+.venv-dm-control/bin/python scripts/run_dm_control_policy.py \
+  --checkpoint runs/dmc_cartpole_swingup_pixel_v2_0614/checkpoints/best.pt \
+  --num-episodes 1 \
+  --max-steps 500 \
+  --render \
+  --mujoco-gl egl \
+  --frames-out outputs/dmc_cartpole_swingup_pixel_v2_0614 \
+  --gif-out outputs/dmc_cartpole_swingup_pixel_v2_0614.gif \
   --device cpu
 ```
 

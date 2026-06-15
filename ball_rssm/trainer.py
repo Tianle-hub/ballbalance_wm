@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 from typing import Iterator
 
@@ -17,7 +18,7 @@ from ball_rssm.buffer import Buffer, InitialStateBounds, sample_initial_state
 from ball_rssm.data.sequence_dataset import batch_to_device
 from ball_rssm.envs import BallBalanceEnv
 from ball_rssm.models import Actor, Critic, Normalizer, WorldModel
-from ball_rssm.models.behavior import compute_return, discount_weights
+from ball_rssm.models.behavior import compute_return, discount_weights, value_loss
 from ball_rssm.models.rssm import RSSMState, stack_states
 from ball_rssm.utils.checkpoint import save_checkpoint
 
@@ -497,9 +498,12 @@ class Trainer:
             returns = returns.detach()
 
         pred = self.critic(features)
-        loss = (weights * (pred - returns) ** 2).mean()
+        per_step_loss = value_loss(pred, returns, self.critic.config.value_head_dist)
+        value_mse = (pred - returns) ** 2
+        loss = (weights * per_step_loss).mean()
         metrics = {
             "critic_loss": loss.detach(),
+            "critic_mse": (weights * value_mse).mean().detach(),
             "critic_value_mean": pred.detach().mean(),
             "critic_target_mean": returns.detach().mean(),
         }
@@ -807,11 +811,31 @@ class Trainer:
         collect_metrics: dict[str, float],
     ) -> None:
         self.log_metrics(iteration, train_metrics, val_metrics, open_loop)
+        self.write_metrics_jsonl(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
         if self.writer is None:
             return
         for key, value in collect_metrics.items():
             if np.isfinite(value):
                 self.writer.add_scalar(f"collect/{key}", value, iteration)
+
+    def write_metrics_jsonl(
+        self,
+        step: int,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+        open_loop: dict[str, float],
+        collect_metrics: dict[str, float] | None = None,
+    ) -> None:
+        record: dict[str, object] = {"step": int(step)}
+        record.update({f"train/{key}": float(value) for key, value in train_metrics.items()})
+        record.update({f"val/{key}": float(value) for key, value in val_metrics.items()})
+        record.update({f"val_open_loop/{key}": float(value) for key, value in open_loop.items()})
+        if collect_metrics is not None:
+            for key, value in collect_metrics.items():
+                if np.isfinite(value):
+                    record[f"collect/{key}"] = float(value)
+        with (self.run_dir / "metrics.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     @staticmethod
     def print_epoch(

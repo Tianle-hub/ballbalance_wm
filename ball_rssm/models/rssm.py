@@ -35,10 +35,14 @@ class RSSM(nn.Module):
         min_std: float = 1e-4,
         discrete: bool = False,
         discrete_classes: int = 32,
+        ensemble_size: int = 1,
+        layer_norm: bool = False,
     ) -> None:
         super().__init__()
         if discrete_classes < 2:
             raise ValueError("discrete_classes must be at least 2")
+        if ensemble_size < 1:
+            raise ValueError("ensemble_size must be at least 1")
         self.action_dim = action_dim
         self.embed_dim = embed_dim
         self.deter_dim = deter_dim
@@ -46,14 +50,31 @@ class RSSM(nn.Module):
         self.min_std = min_std
         self.discrete = discrete
         self.discrete_classes = discrete_classes
+        self.ensemble_size = ensemble_size
         self.stoch_feature_dim = stoch_dim * discrete_classes if discrete else stoch_dim
         self._dist_output_dim = stoch_dim * discrete_classes if discrete else 2 * stoch_dim
 
         # The prior predicts the next stochastic state from recurrent memory alone.
         # The posterior corrects that prior with the encoded observation at the same step.
         self.gru = nn.GRUCell(self.stoch_feature_dim + action_dim, deter_dim)
-        self.prior_net = build_mlp(deter_dim, hidden_dim, self._dist_output_dim)
-        self.posterior_net = build_mlp(deter_dim + embed_dim, hidden_dim, self._dist_output_dim)
+        self.prior_nets = nn.ModuleList(
+            [
+                build_mlp(deter_dim, hidden_dim, self._dist_output_dim, layer_norm=layer_norm)
+                for _ in range(ensemble_size)
+            ]
+        )
+        self.posterior_net = build_mlp(
+            deter_dim + embed_dim,
+            hidden_dim,
+            self._dist_output_dim,
+            layer_norm=layer_norm,
+        )
+
+    @property
+    def prior_net(self) -> nn.Module:
+        """Compatibility alias for the first prior network."""
+
+        return self.prior_nets[0]
 
     def init_state(self, batch_size: int, device: torch.device | str) -> RSSMState:
         """Create the zero initial latent belief for a batch."""
@@ -79,7 +100,7 @@ class RSSM(nn.Module):
         # Imagination step: advance latent dynamics with no observation correction.
         x = torch.cat([prev_state.z, action], dim=-1)
         h = self.gru(x, prev_state.h)
-        state, dist = self._state_from_params(h, self.prior_net(h), deterministic=deterministic)
+        state, dist = self._state_from_params(h, self._prior_params(h), deterministic=deterministic)
         return state, dist
 
     def obs_step(
@@ -208,6 +229,21 @@ class RSSM(nn.Module):
         dist = self._normal_dist(mean, std)
         z = mean if deterministic else dist.rsample()
         return RSSMState(h=h, z=z, mean=mean, std=std), dist
+
+    def _prior_params(self, h: torch.Tensor) -> torch.Tensor:
+        if self.ensemble_size == 1:
+            return self.prior_nets[0](h)
+        index = int(torch.randint(self.ensemble_size, (), device=h.device).item()) if self.training else 0
+        return self.prior_nets[index](h)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        legacy_prefix = prefix + "prior_net."
+        current_prefix = prefix + "prior_nets.0."
+        for key in list(state_dict):
+            if key.startswith(legacy_prefix):
+                suffix = key[len(legacy_prefix) :]
+                state_dict[current_prefix + suffix] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _stats(self, params: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mean, raw_std = torch.chunk(params, 2, dim=-1)

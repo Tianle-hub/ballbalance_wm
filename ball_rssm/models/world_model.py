@@ -7,7 +7,7 @@ from math import prod
 
 import torch
 from torch import nn
-from torch.distributions import Independent, Normal, kl_divergence
+from torch.distributions import Bernoulli, Independent, Normal, kl_divergence
 
 from ball_rssm.models.networks import ConvDecoder, ConvEncoder, build_mlp
 from ball_rssm.models.rssm import RSSM, RSSMState
@@ -25,6 +25,11 @@ class WorldModelConfig:
     embed_dim: int = 64
     hidden_dim: int = 128
     min_std: float = 1e-4
+    rssm_ensemble: int = 1
+    layer_norm: bool = False
+    cnn_depth: int = 48
+    encoder_kernels: tuple[int, ...] = (4, 4, 4, 4)
+    decoder_kernels: tuple[int, ...] = (5, 5, 6, 6)
     dreamer_version: str = "v1"
     discrete_classes: int = 32
     beta_kl: float = 1.0
@@ -34,12 +39,22 @@ class WorldModelConfig:
     kl_balance: float = 0.8
     kl_free_avg: bool = True
     kl_alpha: float | None = None
+    decoder_dist: str = "normal"
+    reward_head_dist: str = "normal"
+    reward_transform: str = "identity"
+    reward_head_layers: int = 4
+    continuation_head_layers: int = 4
     reward_loss_weight: float = 1.0
     continuation_loss_weight: float = 1.0
 
     def __post_init__(self) -> None:
         self.dreamer_version = normalize_dreamer_version(self.dreamer_version)
         self.obs_type = normalize_obs_type(self.obs_type)
+        self.encoder_kernels = tuple(int(kernel) for kernel in self.encoder_kernels)
+        self.decoder_kernels = tuple(int(kernel) for kernel in self.decoder_kernels)
+        self.decoder_dist = normalize_dist_name(self.decoder_dist, "decoder_dist")
+        self.reward_head_dist = normalize_dist_name(self.reward_head_dist, "reward_head_dist")
+        self.reward_transform = normalize_reward_transform(self.reward_transform)
         if self.obs_shape is None:
             self.obs_shape = (self.obs_dim,)
         else:
@@ -55,6 +70,16 @@ class WorldModelConfig:
             raise ValueError("pixel observations require obs_shape=(channels, height, width)")
         if self.discrete_classes < 2:
             raise ValueError("discrete_classes must be at least 2")
+        if self.rssm_ensemble < 1:
+            raise ValueError("rssm_ensemble must be at least 1")
+        if self.cnn_depth < 1:
+            raise ValueError("cnn_depth must be at least 1")
+        if len(self.encoder_kernels) == 0 or len(self.decoder_kernels) == 0:
+            raise ValueError("encoder_kernels and decoder_kernels must be non-empty")
+        if any(kernel <= 0 for kernel in (*self.encoder_kernels, *self.decoder_kernels)):
+            raise ValueError("CNN kernels must be positive")
+        if self.reward_head_layers < 0 or self.continuation_head_layers < 0:
+            raise ValueError("head layer counts must be non-negative")
         if self.kl_alpha is not None:
             self.kl_balance = float(self.kl_alpha)
         if self.free_nats < 0.0:
@@ -71,6 +96,9 @@ class WorldModelConfig:
         data = {key: value for key, value in state.items() if key in valid_names}
         if "obs_shape" in data and data["obs_shape"] is not None:
             data["obs_shape"] = tuple(int(dim) for dim in data["obs_shape"])
+        for key in ("encoder_kernels", "decoder_kernels"):
+            if key in data and data[key] is not None:
+                data[key] = tuple(int(dim) for dim in data[key])
         return cls(**data)
 
     def to_dict(self) -> dict[str, object]:
@@ -99,9 +127,20 @@ class WorldModel(nn.Module):
             raise ValueError("WorldModelConfig.obs_shape must be initialized")
         if config.obs_type == "pixel":
             image_shape = as_image_shape(config.obs_shape)
-            self.encoder = ConvEncoder(image_shape, config.embed_dim)
+            self.encoder = ConvEncoder(
+                image_shape,
+                config.embed_dim,
+                kernels=config.encoder_kernels,
+                cnn_depth=config.cnn_depth,
+                layer_norm=config.layer_norm,
+            )
         else:
-            self.encoder = build_mlp(config.obs_dim, config.hidden_dim, config.embed_dim)
+            self.encoder = build_mlp(
+                config.obs_dim,
+                config.hidden_dim,
+                config.embed_dim,
+                layer_norm=config.layer_norm,
+            )
         self.rssm = RSSM(
             action_dim=config.action_dim,
             embed_dim=config.embed_dim,
@@ -111,6 +150,8 @@ class WorldModel(nn.Module):
             min_std=config.min_std,
             discrete=config.is_v2,
             discrete_classes=config.discrete_classes,
+            ensemble_size=config.rssm_ensemble,
+            layer_norm=config.layer_norm,
         )
         feature_dim = config.feature_dim
         # Heads consume the RSSM feature [h_t, z_t]. Reward stays scalar; episode
@@ -118,11 +159,34 @@ class WorldModel(nn.Module):
         # Dreamer actor/value training uses reward and continuation inside
         # imagined rollouts instead of handing a frozen model to a CEM planner.
         if config.obs_type == "pixel":
-            self.decoder = ConvDecoder(feature_dim, as_image_shape(config.obs_shape))
+            self.decoder = ConvDecoder(
+                feature_dim,
+                as_image_shape(config.obs_shape),
+                kernels=config.decoder_kernels,
+                cnn_depth=config.cnn_depth,
+                layer_norm=config.layer_norm,
+            )
         else:
-            self.decoder = build_mlp(feature_dim, config.hidden_dim, config.obs_dim)
-        self.reward_model = build_mlp(feature_dim, config.hidden_dim, config.reward_dim)
-        self.continuation_model = build_mlp(feature_dim, config.hidden_dim, 1)
+            self.decoder = build_mlp(
+                feature_dim,
+                config.hidden_dim,
+                config.obs_dim,
+                layer_norm=config.layer_norm,
+            )
+        self.reward_model = build_mlp(
+            feature_dim,
+            config.hidden_dim,
+            config.reward_dim,
+            depth=config.reward_head_layers,
+            layer_norm=config.layer_norm,
+        )
+        self.continuation_model = build_mlp(
+            feature_dim,
+            config.hidden_dim,
+            1,
+            depth=config.continuation_head_layers,
+            layer_norm=config.layer_norm,
+        )
 
     @property
     def feature_dim(self) -> int:
@@ -198,8 +262,8 @@ class WorldModel(nn.Module):
             is_first_seq=is_first_seq,
         )
 
-        recon_err = observation_mse(recon[:, 1:], obs_seq[:, 1:])
-        recon_loss = masked_mean(recon_err, effective_mask)
+        recon_nll = observation_nll(recon[:, 1:], obs_seq[:, 1:], self.config.decoder_dist)
+        recon_loss = masked_mean(recon_nll, effective_mask)
         reward_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
         continuation_loss = torch.zeros((), device=obs_seq.device, dtype=obs_seq.dtype)
         reward_metrics: dict[str, torch.Tensor] = {}
@@ -208,13 +272,16 @@ class WorldModel(nn.Module):
                 raise ValueError("reward_seq must have shape [batch, action_steps, reward_dim]")
             # reward_seq[:, t] is produced by action_seq[:, t] and obs_seq[:, t+1],
             # so it is predicted from the posterior latent at index t+1.
-            reward_err = torch.mean((reward_pred[:, 1:] - reward_seq) ** 2, dim=-1)
-            reward_loss = masked_mean(reward_err, effective_mask)
+            reward_target = transform_reward(reward_seq, self.config.reward_transform)
+            reward_nll = reward_head_nll(reward_pred[:, 1:], reward_target, self.config.reward_head_dist)
+            reward_err = torch.mean((reward_pred[:, 1:] - reward_target) ** 2, dim=-1)
+            reward_loss = masked_mean(reward_nll, effective_mask)
 
             reward_metrics = {
-                "reward_loss_nonterminal": masked_mean(reward_err, nonterminal_mask),
-                "reward_loss_terminal": masked_mean(reward_err, terminal_mask),
-                "reward_loss_post_done_padding": masked_mean(reward_err, post_done_mask),
+                "reward_mse": masked_mean(reward_err, effective_mask),
+                "reward_loss_nonterminal": masked_mean(reward_nll, nonterminal_mask),
+                "reward_loss_terminal": masked_mean(reward_nll, terminal_mask),
+                "reward_loss_post_done_padding": masked_mean(reward_nll, post_done_mask),
                 "reward_effective_fraction": effective_mask.float().mean(),
                 "reward_terminal_fraction": terminal_mask.float().mean(),
                 "reward_post_done_padding_fraction": post_done_mask.float().mean(),
@@ -224,12 +291,8 @@ class WorldModel(nn.Module):
         # terminations. Time-limit truncation is not treated as a failure if a
         # separate terminated flag is available.
         continuation_target = (~terminal_mask).unsqueeze(-1).to(dtype=obs_seq.dtype)
-        continuation_bce = nn.functional.binary_cross_entropy_with_logits(
-            continuation_logit[:, 1:],
-            continuation_target,
-            reduction="none",
-        ).squeeze(-1)
-        continuation_loss = masked_mean(continuation_bce, effective_mask)
+        continuation_nll = -Bernoulli(logits=continuation_logit[:, 1:]).log_prob(continuation_target).squeeze(-1)
+        continuation_loss = masked_mean(continuation_nll, effective_mask)
         continuation_prob = torch.sigmoid(continuation_logit[:, 1:]).squeeze(-1)
         reward_metrics.update(
             {
@@ -269,7 +332,7 @@ class WorldModel(nn.Module):
             "raw_kl": raw_kl.detach(),
             "dynamics_kl_loss": dynamics_kl_loss.detach(),
             "representation_kl_loss": representation_kl_loss.detach(),
-            "recon0_loss": observation_mse(recon[:, :1], obs_seq[:, :1]).mean().detach(),
+            "recon0_loss": observation_nll(recon[:, :1], obs_seq[:, :1], self.config.decoder_dist).mean().detach(),
         }
         if "std" in posterior and "std" in prior:
             metrics["posterior_std_mean"] = posterior["std"].detach().mean()
@@ -538,6 +601,26 @@ def normalize_obs_type(obs_type: object) -> str:
     raise ValueError("obs_type must be one of: vector, pixel")
 
 
+def normalize_dist_name(name: object, field_name: str) -> str:
+    normalized = str(name).lower().strip()
+    if normalized in {"normal", "gaussian", "fixed_normal", "fixed-std-normal"}:
+        return "normal"
+    if normalized in {"mse", "deterministic"}:
+        return "mse"
+    raise ValueError(f"{field_name} must be one of: normal, mse")
+
+
+def normalize_reward_transform(name: object) -> str:
+    normalized = str(name).lower().strip()
+    if normalized in {"identity", "none"}:
+        return "identity"
+    if normalized in {"sign", "symlog"}:
+        return normalized
+    if normalized == "tanh":
+        return "tanh"
+    raise ValueError("reward_transform must be one of: identity, sign, tanh, symlog")
+
+
 def require_obs_shape(config: WorldModelConfig) -> tuple[int, ...]:
     if config.obs_shape is None:
         raise ValueError("WorldModelConfig.obs_shape is not initialized")
@@ -559,6 +642,43 @@ def observation_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         raise ValueError("observation tensors must have shape [batch, time, ...]")
     reduce_dims = tuple(range(2, pred.ndim))
     return torch.mean((pred - target) ** 2, dim=reduce_dims)
+
+
+def observation_nll(pred: torch.Tensor, target: torch.Tensor, dist_name: str) -> torch.Tensor:
+    """Return per-step reconstruction loss for deterministic or Normal decoders."""
+
+    if dist_name == "mse":
+        return observation_mse(pred, target)
+    if pred.shape != target.shape:
+        raise ValueError(f"prediction and target shapes differ: {tuple(pred.shape)} != {tuple(target.shape)}")
+    if pred.ndim < 3:
+        raise ValueError("observation tensors must have shape [batch, time, ...]")
+    event_dims = tuple(range(2, pred.ndim))
+    return -Normal(pred, 1.0).log_prob(target).sum(dim=event_dims)
+
+
+def reward_head_nll(pred: torch.Tensor, target: torch.Tensor, dist_name: str) -> torch.Tensor:
+    """Return per-step reward loss for deterministic or fixed-std Normal heads."""
+
+    if pred.shape != target.shape:
+        raise ValueError(f"reward prediction and target shapes differ: {tuple(pred.shape)} != {tuple(target.shape)}")
+    if dist_name == "mse":
+        return torch.mean((pred - target) ** 2, dim=-1)
+    return -Independent(Normal(pred, 1.0), 1).log_prob(target)
+
+
+def transform_reward(reward: torch.Tensor, transform: str) -> torch.Tensor:
+    """Apply the configured reward transform before reward-head likelihood."""
+
+    if transform == "identity":
+        return reward
+    if transform == "sign":
+        return torch.sign(reward)
+    if transform == "tanh":
+        return torch.tanh(reward)
+    if transform == "symlog":
+        return torch.sign(reward) * torch.log1p(reward.abs())
+    raise ValueError(f"unknown reward transform: {transform}")
 
 
 def transition_masks(

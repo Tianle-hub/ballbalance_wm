@@ -69,17 +69,22 @@ Remaining difference: the local path does not add Dreamer V1's optional image de
 
 Danijar's decoder heads output probability distributions and train with log likelihoods. For images, the decoder is a Normal distribution with fixed std; for vectors, V2 uses distribution layers.
 
-This repo decodes deterministic tensors and trains reconstruction with MSE.
+This repo now treats decoder outputs as fixed-std Normal means by default and trains reconstruction with negative log likelihood. `decoder_dist="mse"` is still available for ablations and older smoke runs.
 
-Potential issue: MSE is simpler and often usable, but it changes loss scale, uncertainty modeling, and the balance between reconstruction, reward, continuation, and KL losses.
+Remaining difference: the local decoder still returns tensors from `forward()` for compatibility with reconstruction/open-loop utilities instead of returning distribution objects everywhere.
 
 ### RSSM Prior
 
 Dreamer V2's reference RSSM uses an ensemble prior for dynamics statistics and layer normalization in several dense blocks.
 
-This repo uses a single prior network and no layer normalization by default.
+This repo now supports both through config:
 
-Potential issue: the single-prior model may be less stable on harder DM-Control tasks, especially pixel tasks and long-horizon locomotion.
+- `rssm_ensemble`: number of prior networks sampled during training.
+- `layer_norm`: applies layer normalization in dense blocks and group normalization in CNN blocks.
+
+The default ensemble size remains `1`, so enable a larger ensemble explicitly for harder V2 pixel/locomotion runs.
+
+Remaining difference: the PyTorch ensemble samples one prior member per RSSM image step during training and uses member `0` during deterministic/eval calls. This is close to the reference behavior but not a byte-for-byte architecture match.
 
 ### KL Objective
 
@@ -91,19 +96,21 @@ This repo:
 - Uses Dreamer V2-style `kl_forward`, `kl_balance`, `kl_free`, and `kl_free_avg`.
 - Applies V2 free-nats either to the masked average KL (`free_avg=True`) or to each KL entry before averaging (`free_avg=False`).
 
-Remaining difference: this still uses the local RSSM parameterization and single-prior network, so matching KL controls does not make the world model architecture identical to the reference.
+Remaining difference: this still uses the local RSSM parameterization, so matching KL controls and optionally enabling an ensemble prior does not make the world model architecture identical to the reference.
 
 ### Reward And Continuation
 
 The reference implementation uses probabilistic reward and discount heads. It can also transform rewards depending on config.
 
-This repo uses:
+This repo now uses:
 
-- MSE reward prediction on normalized rewards.
-- BCE continuation prediction from terminal labels.
+- Fixed-std Normal reward likelihood by default through `reward_head_dist="normal"`.
+- Bernoulli continuation likelihood from terminal labels.
+- Configurable reward transforms: `identity`, `sign`, `tanh`, and `symlog`.
+- Fixed-std Normal critic/value likelihood by default through `value_head_dist="normal"`.
 - Heuristics that treat DM-Control `discount == 0` as termination and time limits as truncation.
 
-Potential issue: reward normalization plus MSE changes the scale used for imagined actor/critic learning. This can work, but tuning from the reference configs will not transfer one-to-one.
+Remaining difference: state rewards still pass through the local replay `Normalizer`; pixel observations avoid dataset normalization, but rewards are normalized unless the surrounding training path is changed. Reference tuning therefore still will not transfer one-to-one.
 
 ### Actor Action Space
 
@@ -119,18 +126,20 @@ The local behavior training supports `dynamics`, `reinforce`, and `both`, with `
 
 This is useful, but it is not an exact reproduction of all V1/V2 actor loss details. In particular, entropy terms, stop-gradient placement, and score-function mixing differ from the TensorFlow reference.
 
-### Pixel Architecture (Keep it currently)
+### Pixel Architecture
 
 Dreamer V1's image decoder uses transpose-convolution kernels that exactly expand from `1x1` to `64x64`. Dreamer V2 uses configurable CNN depth and separates CNN/MLP keys.
 
-This repo uses a compact CHW PyTorch conv stack:
+This repo now exposes the reference-style CNN controls:
 
 ```text
-Conv 32/64/128/256, kernel 4, stride 2
-ConvTranspose back to the original image shape
+encoder: Conv depth*[1,2,4,8], kernels [4,4,4,4], stride 2
+decoder: Dense 32*depth -> 1x1, ConvTranspose kernels [5,5,6,6], stride 2
 ```
 
-Potential issue: this is functional, but not architecture-identical. For benchmark-style results, tune `embed_dim`, `deter_dim`, `stoch_dim`, decoder depth, and loss scales.
+With the default `cnn_depth=48`, the decoder expands `1x1 -> 5x5 -> 13x13 -> 30x30 -> 64x64`.
+
+Remaining difference: the local implementation has one observation tensor and does not yet implement the reference's configurable CNN/MLP key routing for multi-key observation dictionaries.
 
 ## Current DM-Control Path
 
@@ -156,12 +165,12 @@ If training fails to improve:
 2. Plot `recon_loss`, `reward_loss`, `continuation_loss`, `kl_loss`, actor loss, and critic loss.
 3. Reduce `seq-len`, `batch-size`, and `imagination-horizon` for pixel tasks until the smoke path is stable.
 4. Try larger models for pixel tasks: `deter_dim=200`, `stoch_dim=30`, `embed_dim=1024`.
-5. Tune reward and continuation loss weights; MSE reward scale differs from reference log-likelihood heads.
-6. Consider adding layer norm and ensemble priors before expecting reference-level V2 performance.
+5. Tune reward, continuation, KL, and decoder loss weights; the local fixed-std likelihood scales may still differ from the reference configs.
+6. Try `--layer-norm` and `--rssm-ensemble 5` before expecting harder V2 pixel/locomotion tasks to behave like the reference.
 
 ## Highest-Priority Future Improvements
 
-1. Add V1-style image dequantization and bit-depth controls.
-2. Add distributional decoder/reward/value heads instead of plain MSE heads.
-3. Add benchmark logging summaries for rendered reconstructions and imagined rollouts.
-4. Add exact reference-style replay prefetching and dataset worker behavior.
+1. Add V1-style image dequantization and bit-depth controls. Not done yet; the current pixel path is deterministic `uint8 / 255.0 - 0.5`.
+2. Distributional decoder/reward/value heads. Mostly addressed with fixed-std Normal decoder/reward/value losses and Bernoulli continuation; remaining gap is returning explicit distribution objects from all heads and matching every reference distribution option.
+3. Add benchmark logging summaries for rendered reconstructions and imagined rollouts. Not done yet.
+4. Add exact reference-style replay prefetching and dataset worker behavior. Not done yet.

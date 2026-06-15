@@ -31,6 +31,19 @@ from ball_rssm.utils.seed import set_seed
 from scripts.train_dreamer import find_resume_checkpoint
 
 
+def parse_int_tuple(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError("expected a comma-separated integer list")
+    try:
+        parsed = tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a comma-separated integer list") from exc
+    if any(item <= 0 for item in parsed):
+        raise argparse.ArgumentTypeError("all integer tuple values must be positive")
+    return parsed
+
+
 class DMControlTrainer(Trainer):
     """Trainer with DM-Control actor collection instead of BallBalanceEnv collection."""
 
@@ -136,7 +149,18 @@ def main() -> None:
     parser.add_argument("--stoch-dim", type=int, default=16)
     parser.add_argument("--embed-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--rssm-ensemble", type=int, default=1)
+    parser.add_argument("--layer-norm", action="store_true")
+    parser.add_argument("--cnn-depth", type=int, default=48)
+    parser.add_argument("--encoder-kernels", type=parse_int_tuple, default=(4, 4, 4, 4))
+    parser.add_argument("--decoder-kernels", type=parse_int_tuple, default=(5, 5, 6, 6))
     parser.add_argument("--discrete-classes", type=int, default=32)
+    parser.add_argument("--decoder-dist", choices=["normal", "mse"], default="normal")
+    parser.add_argument("--reward-head-dist", choices=["normal", "mse"], default="normal")
+    parser.add_argument("--value-head-dist", choices=["normal", "mse"], default="normal")
+    parser.add_argument("--reward-transform", choices=["identity", "sign", "tanh", "symlog"], default="identity")
+    parser.add_argument("--reward-head-layers", type=int, default=4)
+    parser.add_argument("--continuation-head-layers", type=int, default=4)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
     parser.add_argument("--critic-hidden-dim", type=int, default=128)
     parser.add_argument("--beta-kl", type=float, default=1.0)
@@ -255,6 +279,11 @@ def main() -> None:
             stoch_dim=args.stoch_dim,
             embed_dim=args.embed_dim,
             hidden_dim=args.hidden_dim,
+            rssm_ensemble=args.rssm_ensemble,
+            layer_norm=args.layer_norm,
+            cnn_depth=args.cnn_depth,
+            encoder_kernels=args.encoder_kernels,
+            decoder_kernels=args.decoder_kernels,
             dreamer_version=args.dreamer_version,
             discrete_classes=args.discrete_classes,
             beta_kl=args.beta_kl,
@@ -263,6 +292,11 @@ def main() -> None:
             kl_forward=args.kl_forward,
             kl_balance=args.kl_balance,
             kl_free_avg=args.kl_free_avg,
+            decoder_dist=args.decoder_dist,
+            reward_head_dist=args.reward_head_dist,
+            reward_transform=args.reward_transform,
+            reward_head_layers=args.reward_head_layers,
+            continuation_head_layers=args.continuation_head_layers,
             reward_loss_weight=args.reward_loss_weight,
             continuation_loss_weight=args.continuation_loss_weight,
         )
@@ -275,7 +309,11 @@ def main() -> None:
             action_low=action_low,
             action_high=action_high,
         )
-        critic_config = CriticConfig(feature_dim=world_config.feature_dim, hidden_dim=args.critic_hidden_dim)
+        critic_config = CriticConfig(
+            feature_dim=world_config.feature_dim,
+            hidden_dim=args.critic_hidden_dim,
+            value_head_dist=args.value_head_dist,
+        )
         start_epoch = 0
         best_val_loss = float("inf")
     else:

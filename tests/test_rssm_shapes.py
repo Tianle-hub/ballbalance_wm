@@ -148,6 +148,41 @@ def test_dreamer_v2_forward_kl_and_free_per_step_are_finite() -> None:
     assert metrics["kl_loss"].item() >= 0.1
 
 
+def test_dreamer_v2_ensemble_layer_norm_and_distribution_heads() -> None:
+    batch_size = 2
+    seq_len = 4
+    obs_seq = torch.randn(batch_size, seq_len + 1, 6)
+    action_seq = torch.randn(batch_size, seq_len, 2)
+    reward_seq = torch.randn(batch_size, seq_len, 1)
+
+    model = WorldModel(
+        WorldModelConfig(
+            obs_dim=6,
+            action_dim=2,
+            deter_dim=16,
+            stoch_dim=3,
+            discrete_classes=5,
+            embed_dim=8,
+            hidden_dim=16,
+            dreamer_version="v2",
+            rssm_ensemble=3,
+            layer_norm=True,
+            decoder_dist="normal",
+            reward_head_dist="normal",
+            reward_transform="symlog",
+        )
+    )
+
+    assert len(model.rssm.prior_nets) == 3
+    loss, metrics = model.loss(obs_seq, action_seq, reward_seq)
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(metrics["recon_loss"])
+    assert torch.isfinite(metrics["reward_loss"])
+    assert torch.isfinite(metrics["reward_mse"])
+    assert torch.isfinite(metrics["continuation_loss"])
+
+
 def test_continuation_reward_model_shapes_and_finite_loss() -> None:
     batch_size = 3
     seq_len = 7

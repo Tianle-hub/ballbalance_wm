@@ -40,6 +40,10 @@ class ActorConfig:
 class CriticConfig:
     feature_dim: int
     hidden_dim: int = 128
+    value_head_dist: str = "normal"
+
+    def __post_init__(self) -> None:
+        self.value_head_dist = normalize_value_dist(self.value_head_dist)
 
     @classmethod
     def from_dict(cls, state: dict[str, Any]) -> "CriticConfig":
@@ -171,9 +175,15 @@ class DenseDecoder(nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         # DreamerV1 learns a value bootstrap for imagined TD(lambda) returns.
         # PlaNet did not need this critic because it planned finite horizons.
+        return self.mean(features)
+
+    def mean(self, features: torch.Tensor) -> torch.Tensor:
         flat = features.reshape(-1, features.shape[-1])
         value = self.value_model(flat)
         return value.reshape(*features.shape[:-1], 1)
+
+    def get_dist(self, features: torch.Tensor) -> Independent:
+        return Independent(Normal(self.mean(features), 1.0), 1)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         legacy_prefix = prefix + "net."
@@ -186,6 +196,24 @@ class DenseDecoder(nn.Module):
 
 class Critic(DenseDecoder):
     """Compatibility name for the Dreamer scalar value model."""
+
+
+def normalize_value_dist(name: object) -> str:
+    normalized = str(name).lower().strip()
+    if normalized in {"normal", "gaussian", "fixed_normal", "fixed-std-normal"}:
+        return "normal"
+    if normalized in {"mse", "deterministic"}:
+        return "mse"
+    raise ValueError("value_head_dist must be one of: normal, mse")
+
+
+def value_loss(pred: torch.Tensor, target: torch.Tensor, dist_name: str) -> torch.Tensor:
+    if pred.shape != target.shape:
+        raise ValueError("pred and target must have the same shape")
+    dist_name = normalize_value_dist(dist_name)
+    if dist_name == "mse":
+        return (pred - target) ** 2
+    return -Independent(Normal(pred, 1.0), 1).log_prob(target).unsqueeze(-1)
 
 
 def compute_return(

@@ -225,7 +225,14 @@ class StreamReplay:
         out_path = Path(path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         data = self.to_dataset()
-        np.savez_compressed(out_path, **data, **self._metadata_arrays(metadata))
+        tmp_path = out_path.with_name(f".{out_path.name}.tmp")
+        try:
+            with tmp_path.open("wb") as handle:
+                np.savez_compressed(handle, **data, **self._metadata_arrays(metadata))
+            tmp_path.replace(out_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def to_dataset(self) -> dict[str, np.ndarray]:
         if len(self.obs) < 2:
