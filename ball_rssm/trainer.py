@@ -112,7 +112,7 @@ class Trainer:
 
         self.target_critic.requires_grad_(False)
 
-    def train(
+    def train_offline(
         self,
         epochs: int,
         batch_size: int,

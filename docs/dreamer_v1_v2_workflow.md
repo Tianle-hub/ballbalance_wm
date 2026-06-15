@@ -8,6 +8,73 @@ There is no separate PlaNet controller. The world model, actor, critic, and
 target critic are trained together, and closed-loop control uses the learned
 actor directly from the RSSM belief state.
 
+For concrete starting values and tuning recipes, see
+[dreamer_tuning.md](dreamer_tuning.md).
+
+## PlaNet, Dreamer V1, And Dreamer V2 In This Codebase
+
+The three agents share the RSSM idea, but they differ in how actions are chosen,
+how behavior is learned, and which robustness tricks are important.
+
+| Agent | World model | Action selection | Behavior learning | Current codebase status |
+| --- | --- | --- | --- | --- |
+| PlaNet | RSSM dynamics with reconstruction and reward prediction | Online planning with CEM over action sequences | No learned actor or critic is required for control | Not implemented as a separate controller. The code keeps open-loop prediction utilities but controls with a learned actor. |
+| Dreamer V1 | Continuous diagonal Gaussian stochastic state `z` plus deterministic GRU state `h` | Learned actor over RSSM features `[h, z]` | Actor and critic train on imagined latent rollouts with TD(lambda) returns | Implemented through `--dreamer-version v1`. Uses V1-style free nats on KL. |
+| Dreamer V2 | Straight-through categorical stochastic state, KL balancing, larger discrete feature space | Learned actor over RSSM features `[h, z]` | Atari used REINFORCE-style actor gradients; continuous control usually prefers dynamics gradients | Implemented through `--dreamer-version v2`. The repo supports `dynamics`, `reinforce`, and `both` actor-gradient modes. |
+
+The code path is now organized around the same conceptual split:
+
+```text
+world_model.py -> observation, reward, continuation, and KL losses
+behavior.py    -> actor loss, critic loss, TD(lambda), discount weights
+trainer.py     -> replay batches, optimizer steps, collection, checkpoints
+```
+
+This is different from PlaNet's control story. PlaNet uses the world model for
+planning at action time. Dreamer V1 and V2 use the world model for imagination
+during training, then deploy the actor directly.
+
+## Robustness Techniques
+
+The DreamerV2 paper reports several changes that helped on Atari. In this repo,
+the same ideas map to explicit config knobs, but their best values depend on
+whether the task is continuous control, pixel control, or a discrete-action
+benchmark.
+
+| Technique | DreamerV1 baseline | DreamerV2 change | Current code knob | Practical note |
+| --- | --- | --- | --- | --- |
+| Categorical latents | Continuous Gaussian RSSM latents | Straight-through categorical latents | `--dreamer-version v2`, `--stoch-dim`, `--discrete-classes` | Increases latent capacity. Useful for V2 and pixels, but raises feature size to `stoch_dim * discrete_classes`. |
+| KL balancing | Free nats on mean posterior-prior KL | Separately balance representation and dynamics KL terms | `--kl-balance`, `--kl-free`, `--kl-free-avg`, `--kl-forward` | Helps the temporal prior learn useful dynamics instead of relying too much on posterior correction. |
+| Actor gradient choice | Dynamics backpropagation through imagined rollouts | Atari favored REINFORCE-only; continuous control favored dynamics gradients | `--actor-gradient dynamics|reinforce|both|auto` | For DM-Control continuous actions, keep `auto` or `dynamics` first. Try `reinforce` mostly for discrete-action experiments. |
+| Model size | Smaller V1 models | Larger networks and CNN depths | `--deter-dim`, `--stoch-dim`, `--hidden-dim`, `--embed-dim`, `--cnn-depth` | Pixel tasks usually need much larger models than state tasks. |
+| Policy entropy | External action noise is common for continuous control | Entropy regularization supports exploration and imagination | `--actor-entropy-scale`, `--exploration-mode policy_entropy` | V2 defaults to policy-entropy exploration. V1 defaults to external Gaussian noise. |
+| Action normalization | Environment-dependent | Bounded actions normalized to `[-1, 1]` | DM-Control `NormalizeActionWrapper` | This is already used for DM-Control replay, actor training, and evaluation. |
+| Episode reset handling | Depends on environment wrapper | Driver APIs pass reset markers | `is_first` in `StreamReplay` and `RSSM.observe()` | Prevents training the RSSM through artificial reset boundaries. |
+| Continuation prediction | Often separate from reward | Discount/continuation head controls imagined horizon | `continuation_loss_weight` and Bernoulli continuation head | Important for imagined rollouts and terminal transitions. |
+| Prior stability | Single prior often works on simpler tasks | V2 reference can use ensemble dynamics and normalization | `--rssm-ensemble`, `--layer-norm` | Try these before expecting harder pixel locomotion to match reference behavior. |
+
+Changes that the DreamerV2 paper tried but did not keep should be treated as
+ablation ideas, not defaults. In this repo, prefer changes that are already
+exposed as flags before adding new architectural variations.
+
+## Network Setting Differences
+
+The most important architecture difference is not just "V1 versus V2"; it is
+also "state observations versus pixel observations."
+
+| Component | PlaNet-style view | Dreamer V1 in this repo | Dreamer V2 in this repo |
+| --- | --- | --- | --- |
+| RSSM deterministic state | GRU memory `h` | Same GRU memory `h` | Same GRU memory `h` |
+| RSSM stochastic state | Usually continuous latent | Continuous Gaussian `z` with `stoch_dim` | Straight-through categorical `z` with `stoch_dim * discrete_classes` flattened features |
+| Prior | Dynamics prior predicts next latent from `h` | Single prior by default | Configurable prior ensemble through `--rssm-ensemble`; still defaults to `1` |
+| Encoder/decoder for vectors | MLP | MLP | MLP |
+| Encoder for pixels | CNN | Configurable CNN encoder | Configurable CNN encoder with V2-friendly depth |
+| Decoder for pixels | CNN transpose decoder | `1x1 -> 64x64` transpose-conv path when using default kernels | Same decoder path; tune `cnn_depth`, latent dims, and loss weights |
+| Reward head | Predicts reward for planning | Fixed-std Normal reward likelihood by default | Same head; optional reward transforms |
+| Continuation head | Sometimes absent or implicit | Bernoulli continuation likelihood | Same head |
+| Actor/critic | Not needed for CEM control | Learned actor and critic | Learned actor and critic |
+| Exploration | Planner samples candidate action sequences | External action noise by default | Policy entropy by default |
+
 ## Mode Matrix
 
 `--dreamer-version` selects the RSSM latent family and KL loss:

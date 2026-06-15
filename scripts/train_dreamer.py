@@ -367,7 +367,7 @@ def main() -> None:
             best_val_loss=best_val_loss,
         )
     else:
-        trainer.train(
+        trainer.train_offline(
             epochs=args.epochs,
             batch_size=args.batch_size,
             seq_len=args.seq_len,
