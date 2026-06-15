@@ -476,6 +476,8 @@ class Trainer:
                 action = dist.mode()
                 log_prob = torch.zeros(action.shape[:-1], device=action.device, dtype=action.dtype)
             elif actor_gradient == "reinforce":
+                # TODO：unknwon to me why reinforce uses sample_with_log_prob, and both use rsample_with_log_prob
+                # add comments for me to help me understand the difference between these two sampling methods, and why they are used in different actor_gradient modes
                 action, log_prob = dist.sample_with_log_prob()
                 action = action.detach()
             elif actor_gradient == "both":
@@ -505,7 +507,7 @@ class Trainer:
         configured_exploration_noise: float | None = None,
     ) -> dict[str, float]:
         """Collect real environment episodes with the current actor and append them to replay."""
-
+        # So policy entropy technique appied here? for efficient exploration?
         if configured_exploration_noise is None:
             configured_exploration_noise = exploration_noise
         if num_episodes <= 0:
@@ -528,6 +530,7 @@ class Trainer:
         rng = np.random.default_rng(seed)
         rewards: list[float] = []
         lengths: list[int] = []
+        # what was_world_training & was_actor_training means?
         was_world_training = self.world_model.training
         was_actor_training = self.actor.training
         self.world_model.eval()
@@ -546,6 +549,7 @@ class Trainer:
                 lengths.append(length)
         finally:
             env.close()
+            # why here has training code?
             self.world_model.train(was_world_training)
             self.actor.train(was_actor_training)
 
@@ -571,6 +575,7 @@ class Trainer:
         initial_bounds: InitialStateBounds,
         exploration_noise: float,
     ) -> tuple[dict[str, np.ndarray], float, int]:
+        # TODO: or policy entropy or adding noise to action applied here?
         obs = np.zeros_like(self.buffer.obs_buffer[0])
         action = np.zeros_like(self.buffer.action_buffer[0])
         reward = np.zeros_like(self.buffer.reward_buffer[0])
@@ -639,6 +644,8 @@ class Trainer:
         action: np.ndarray,
         is_first: bool = False,
     ) -> RSSMState:
+        # so this is just a wrapper for world_model.posterior_update, because the as_tensor needs to be done locally?
+        # add comments to explain this function, and answer my doubt about why this function is needed?
         obs_shape = self.world_model.config.obs_shape
         if obs_shape is None:
             raise ValueError("world model config does not define obs_shape")

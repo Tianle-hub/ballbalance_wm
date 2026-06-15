@@ -49,7 +49,7 @@ Starte mit Zustandsbeobachtungen. Das ist der schnellste Weg, um World Model, Ac
   --domain cartpole \
   --task swingup \
   --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v1_0614 \
+  --run-dir runs/dmc_cartpole_swingup_v1_0615 \
   --dreamer-version v1 \
   --seed-episodes 20 \
   --buffer-episodes 2000 \
@@ -78,7 +78,7 @@ V2 nutzt den kategorischen RSSM-Pfad. Für kontinuierliche DM-Control-Aktionen w
   --domain cartpole \
   --task swingup \
   --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v2_0614 \
+  --run-dir runs/dmc_cartpole_swingup_v2_0615 \
   --dreamer-version v2 \
   --stoch-dim 16 \
   --discrete-classes 32 \
@@ -124,7 +124,7 @@ Die Standard-Pixelarchitektur nutzt Dreamer-artige CNN-Optionen: Encoder-Kernels
   --decoder-kernels 5,5,6,6 \
   --camera-id 0 \
   --mujoco-gl egl \
-  --run-dir runs/dmc_cartpole_swingup_pixel_v1_0614 \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v1_0615 \
   --dreamer-version v1 \
   --seed-episodes 20 \
   --buffer-episodes 1000 \
@@ -151,7 +151,7 @@ Pixel-Training ist deutlich schwerer als State-Training. Verwende zuerst eine kl
   --decoder-kernels 5,5,6,6 \
   --camera-id 0 \
   --mujoco-gl egl \
-  --run-dir runs/dmc_cartpole_swingup_pixel_v2_0614 \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v2_0615 \
   --dreamer-version v2 \
   --stoch-dim 16 \
   --discrete-classes 32 \
@@ -213,13 +213,13 @@ Trainierte Policy online in der DM-Control-Umgebung ausführen und gerenderte Fr
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
-  --checkpoint runs/dmc_cartpole_swingup_v1_0614/checkpoints/best.pt \
+  --checkpoint runs/dmc_cartpole_swingup_v1_0615/checkpoints/best.pt \
   --num-episodes 3 \
   --max-steps 500 \
   --render \
   --mujoco-gl egl \
-  --frames-out outputs/dmc_cartpole_swingup_v1_0614 \
-  --gif-out outputs/dmc_cartpole_swingup_v1_0614.gif \
+  --frames-out outputs/dmc_cartpole_swingup_v1_0615 \
+  --gif-out outputs/dmc_cartpole_swingup_v1_0615.gif \
   --device cpu
 ```
 
@@ -227,13 +227,13 @@ V2-Checkpoint evaluieren:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
-  --checkpoint runs/dmc_cartpole_swingup_v2_0614/checkpoints/best.pt \
+  --checkpoint runs/dmc_cartpole_swingup_v2_0615/checkpoints/best.pt \
   --num-episodes 1 \
   --max-steps 500 \
   --render \
   --mujoco-gl egl \
-  --frames-out outputs/dmc_cartpole_swingup_v2_0614 \
-  --gif-out outputs/dmc_cartpole_swingup_v2_0614.gif \
+  --frames-out outputs/dmc_cartpole_swingup_v2_0615 \
+  --gif-out outputs/dmc_cartpole_swingup_v2_0615.gif \
   --device cpu
 ```
 
@@ -241,13 +241,13 @@ V2-Pixel-Checkpoint evaluieren:
 
 ```bash
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
-  --checkpoint runs/dmc_cartpole_swingup_pixel_v2_0614/checkpoints/best.pt \
+  --checkpoint runs/dmc_cartpole_swingup_pixel_v2_0615/checkpoints/best.pt \
   --num-episodes 1 \
   --max-steps 500 \
   --render \
   --mujoco-gl egl \
-  --frames-out outputs/dmc_cartpole_swingup_pixel_v2_0614 \
-  --gif-out outputs/dmc_cartpole_swingup_pixel_v2_0614.gif \
+  --frames-out outputs/dmc_cartpole_swingup_pixel_v2_0615 \
+  --gif-out outputs/dmc_cartpole_swingup_pixel_v2_0615.gif \
   --device cpu
 ```
 
