@@ -17,7 +17,7 @@ Training data follows:
 obs[:, t] + action[:, t] -> obs[:, t + 1]
 ```
 
-The world model encodes normalized observations and runs posterior inference over `obs[0:T+1]` with actions `action[0:T]`. Dreamer behavior learning then flattens posterior states across batch and time, subsamples up to `behavior_batch_size` starts, and launches imagined rollouts from those states.
+The world model encodes normalized observations and runs posterior inference over `obs[0:T+1]` with actions `action[0:T]`. Dreamer behavior learning then flattens posterior states across batch and time and launches imagined rollouts from all of those states.
 
 RSSM feature convention:
 

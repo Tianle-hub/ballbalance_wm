@@ -121,15 +121,14 @@ the same Dreamer batch update:
    - V1 or V2 KL loss.
 3. Re-run posterior inference with the updated world model.
 4. Flatten posterior RSSM states across batch and time, dropping the final state.
-5. Subsample up to `--behavior-batch-size` start states for imagination.
+5. Use those flattened states as actor/critic imagination starts.
 6. Imagine latent rollouts with the actor for `--imagination-horizon` steps.
 7. Update the actor from imagined TD(lambda) returns plus entropy bonus.
 8. Update the critic toward target-critic TD(lambda) returns.
 9. Soft-update the target critic using `--target-tau`.
 
-World-model training always uses the full replay sequence batch. The
-`--behavior-batch-size` cap only limits actor and critic imagination starts, so
-long `--seq-len` values do not explode behavior-update memory.
+World-model training always uses the full replay sequence batch. Actor and
+critic imagination starts from the flattened posterior state batch.
 
 ## Replay Data
 
@@ -177,8 +176,7 @@ python scripts/train_dreamer.py \
   --batch-size 512 \
   --epochs 100 \
   --imagination-horizon 15 \
-  --behavior-batch-size 4096
-```
+  ```
 
 V2-style categorical RSSM:
 
@@ -192,8 +190,7 @@ python scripts/train_dreamer.py \
   --batch-size 512 \
   --epochs 100 \
   --imagination-horizon 15 \
-  --behavior-batch-size 4096
-```
+  ```
 
 Training resumes by default from `run-dir/checkpoints/last.pt` or
 `run-dir/checkpoints/latest.pt`. Use `--no-resume` to start a fresh run, or
@@ -205,7 +202,7 @@ Online mode alternates update steps with actor-driven collection:
 
 1. Build the initial replay buffer from `--dataset`, resumed replay, or seed
    collection.
-2. Run `--update-steps` Dreamer batch updates.
+2. Run `--train-steps` Dreamer batch updates.
 3. Validate and write checkpoints.
 4. Collect `--collect-episodes` real environment episodes with the current actor.
 5. Append those episodes to replay and save `runs/.../replay/latest.npz`.
@@ -227,7 +224,7 @@ python scripts/train_dreamer.py \
   --target-bound 0.15 \
   --action-noise-std 0.04 \
   --online-iterations 300 \
-  --update-steps 150 \
+  --train-steps 150 \
   --collect-episodes 50 \
   --seq-len 200 \
   --batch-size 256
@@ -246,7 +243,7 @@ python scripts/train_dreamer.py \
   --buffer-episodes 20000 \
   --max-episode-steps 300 \
   --online-iterations 300 \
-  --update-steps 150 \
+  --train-steps 150 \
   --collect-episodes 50 \
   --exploration-noise 0.3 \
   --exploration-decay 0.995 \
@@ -268,7 +265,7 @@ python scripts/train_dreamer.py \
   --buffer-episodes 20000 \
   --max-episode-steps 300 \
   --online-iterations 300 \
-  --update-steps 150 \
+  --train-steps 150 \
   --collect-episodes 50 \
   --seq-len 200 \
   --batch-size 256
@@ -306,11 +303,8 @@ and metrics, but the effective external noise used for collection is `0.0`.
 - `critic_loss`: value regression loss on imagined features.
 - `imagined_reward_mean` and `imagined_continue_mean`: rollout-model
   diagnostics for behavior learning.
-- `behavior_start_count`: posterior starts available from the full world-model
-  batch.
-- `behavior_sample_count`: posterior starts actually used for actor/value
-  imagination.
-- `val_open_loop/obs_h*` and `val_open_loop/reward_h*`: open-loop prior
+- `behavior_start_count`: posterior starts used for actor/value imagination.
+- `val_prior_rollout/obs_h*` and `val_prior_rollout/reward_h*`: prior rollout
   prediction losses after a posterior context window.
 - `collect/*`: online-only collection rewards, replay size, exploration mode,
   configured noise, and effective noise.

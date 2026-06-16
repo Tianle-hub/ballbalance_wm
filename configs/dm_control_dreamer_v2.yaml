@@ -17,14 +17,13 @@ seed_episodes: 20        # Random episodes collected before learning starts.
 buffer_episodes: 2000    # Replay capacity measured in full episodes.
 max_episode_steps: 200   # Per-episode horizon used by collector and replay windows.
 online_iterations: 100   # Outer loop count: train updates, validate, collect, checkpoint.
-update_steps: 100        # Gradient updates per online iteration.
+train_steps: 100         # Gradient updates per online iteration.
 collect_episodes: 5      # Fresh policy episodes appended after each iteration.
 val_fraction: 0.1        # Episode fraction held out for validation metrics.
 
 # Batch geometry.
 seq_len: 50              # RSSM training sequence length; observations use seq_len + 1 frames.
 batch_size: 128          # Replay sequences per world-model update.
-behavior_batch_size: 1024 # Posterior states sampled for actor/critic imagination.
 imagination_horizon: 15  # Dreamer actor/critic imagined rollout length.
 
 # DM-Control wrapper and rendering. Camera fields matter only for obs_type: pixel.

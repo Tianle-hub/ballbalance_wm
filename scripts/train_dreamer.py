@@ -114,7 +114,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--online-iterations", type=int, default=None)
-    parser.add_argument("--update-steps", type=int, default=100)
+    parser.add_argument("--train-steps", type=int, default=100)
     parser.add_argument("--collect-episodes", type=int, default=1)
     parser.add_argument("--seed-episodes", type=int, default=20)
     parser.add_argument("--buffer-episodes", type=int, default=1000)
@@ -141,12 +141,6 @@ def main() -> None:
     parser.add_argument("--reward-loss-weight", type=float, default=1.0)
     parser.add_argument("--continuation-loss-weight", type=float, default=1.0)
     parser.add_argument("--imagination-horizon", type=int, default=15)
-    parser.add_argument(
-        "--behavior-batch-size",
-        type=int,
-        default=4096,
-        help="Maximum posterior states used for each actor/value imagination update.",
-    )
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.95)
     parser.add_argument(
@@ -307,7 +301,6 @@ def main() -> None:
 
     dreamer_config = DreamerTrainConfig(
         imagination_horizon=args.imagination_horizon,
-        behavior_batch_size=args.behavior_batch_size,
         discount=args.discount,
         lambda_=args.lambda_,
         actor_gradient=args.actor_gradient,
@@ -347,7 +340,7 @@ def main() -> None:
     iterations = args.online_iterations if args.online_iterations is not None else args.epochs
     trainer.train_online(
         iterations=iterations,
-        update_steps=args.update_steps,
+        train_steps=args.train_steps,
         collect_episodes=args.collect_episodes,
         batch_size=args.batch_size,
         seq_len=args.seq_len,

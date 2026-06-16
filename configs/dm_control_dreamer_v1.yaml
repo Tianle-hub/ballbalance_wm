@@ -3,32 +3,31 @@
 #   .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py --config configs/dm_control_dreamer_v1.yaml
 
 # DM-Control task. Change these three fields to reuse the preset on another task.
-domain: cartpole
-task: swingup
-obs_type: state          # "state" is fast and stable; use "pixel" for rendered camera observations.
-run_dir: runs/dmc_cartpole_swingup_v1_yaml
+domain: walker
+task: walk
+obs_type: pixel          # Original DreamerV1 DM-Control runs use image observations.
+run_dir: runs/dmc_walker_walk_v1_yaml
 dataset: null            # Optional replay .npz. Leave null to collect random seed replay online.
 
 # Dreamer variant. V1 uses continuous Gaussian RSSM stochastic latents.
 dreamer_version: v1
 
 # Replay and online interaction.
-seed_episodes: 20        # Random episodes collected before learning starts.
-buffer_episodes: 2000    # Replay capacity measured in full episodes.
-max_episode_steps: 200   # Per-episode horizon used by collector and replay windows.
-online_iterations: 100   # 跑100个收训存大循环，Outer loop count: train updates, validate, collect, checkpoint.
-update_steps: 50        # Gradient updates per online iteration.
-collect_episodes: 5      # Fresh policy episodes appended after each iteration.
+seed_episodes: 5         # Original prefill=5000 with time_limit=1000 is about 5 random episodes.
+buffer_episodes: 5000    # Replay capacity measured in full episodes.
+max_episode_steps: 1000  # Original DreamerV1 time_limit.
+online_iterations: 4995  # Approx (steps - prefill) / train_every = (5e6 - 5000) / 1000.
+train_steps: 100         # Original DreamerV1 train_steps.
+collect_episodes: 1      # Original train_every=1000 with one 1000-step env.
 val_fraction: 0.1        # Episode fraction held out for validation metrics.
 
 # Batch geometry.
-seq_len: 50              # RSSM training sequence length; observations use seq_len + 1 frames.
-batch_size: 128          # Replay sequences per world-model update.
-behavior_batch_size: 1024 # Posterior states sampled for actor/critic imagination.
-imagination_horizon: 15  # Dreamer actor/critic imagined rollout length.
+seq_len: 50              # Original DreamerV1 batch_length.
+batch_size: 50           # Original DreamerV1 batch_size.
+imagination_horizon: 15  # Original DreamerV1 horizon.
 
 # DM-Control wrapper and rendering. Camera fields matter only for obs_type: pixel.
-action_repeat: 1         # Repeat each selected action this many env steps.
+action_repeat: 2         # Original DreamerV1 action_repeat.
 height: 64               # Pixel render height; changing this may require CNN decoder changes.
 width: 64                # Pixel render width; keep 64 for the default conv architecture.
 camera_id: null          # null uses task defaults; cartpole pixel defaults to fixed camera 0.
@@ -36,21 +35,21 @@ camera_fovy: null        # null uses task defaults; cartpole pixel defaults to w
 mujoco_gl: null          # Use "egl" on headless machines for pixel rendering.
 
 # Optimizers.
-world_lr: 0.0003         # World model Adam learning rate.
+world_lr: 0.0006         # Original DreamerV1 model_lr.
 actor_lr: 0.00008        # Actor Adam learning rate.
 critic_lr: 0.00008       # Critic Adam learning rate.
 grad_clip: 100.0         # Global gradient norm clipping for each optimizer group.
 
 # RSSM and MLP sizes.
-deter_dim: 128           # Deterministic recurrent hidden state size.
-stoch_dim: 16            # Continuous stochastic latent size for V1.
+deter_dim: 200           # Original DreamerV1 deter_size.
+stoch_dim: 30            # Original DreamerV1 stoch_size.
 embed_dim: 64            # Observation encoder embedding size.
-hidden_dim: 128          # Shared RSSM/head hidden layer width.
+hidden_dim: 400          # Original DreamerV1 num_units.
 rssm_ensemble: 1         # Dynamics ensemble size; >1 is heavier but can improve robustness.
 layer_norm: false        # LayerNorm in RSSM/head MLPs; often useful for harder V2/pixel runs.
 
 # Pixel CNN architecture. These defaults are shaped for 64x64 observations.
-cnn_depth: 48
+cnn_depth: 32
 encoder_kernels: [4, 4, 4, 4]
 decoder_kernels: [5, 5, 6, 6]
 
@@ -65,11 +64,11 @@ reward_transform: identity # Optional reward target transform: identity/sign/tan
 reward_head_layers: 4
 continuation_head_layers: 4
 reward_loss_weight: 1.0
-continuation_loss_weight: 1.0
+continuation_loss_weight: 0.0 # Original DreamerV1 config has pcont=false.
 
 # KL regularization.
 beta_kl: 1.0             # Overall KL loss scale.
-free_nats: 1.0           # Legacy free-nats value kept for compatibility.
+free_nats: 3.0           # Original DreamerV1 free_nats.
 kl_free: 0.0             # Free KL threshold used by the current KL helper.
 kl_balance: 0.8          # Balance between representation and dynamics KL terms.
 kl_forward: false        # false means reverse KL direction by default.
@@ -82,7 +81,7 @@ actor_gradient: auto     # auto resolves to dynamics gradients for continuous ac
 actor_entropy_scale: 0.001 # Entropy bonus scale in imagined actor objective.
 exploration_mode: auto   # auto uses action noise for V1 and policy entropy for V2.
 exploration_noise: 0.3   # Gaussian action noise when exploration_mode resolves to noise.
-exploration_decay: 1.0   # Multiplicative decay per online iteration.
+exploration_decay: 1.0   # No decay; closest match to original expl_decay=0.0.
 min_exploration_noise: 0.0
 target_tau: 0.01         # Critic target-network soft update rate.
 

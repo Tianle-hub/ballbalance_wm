@@ -221,7 +221,7 @@ Danach kannst du mit dem DM-Control-Trainer aus diesem Replay trainieren:
   --task walk \
   --obs-type state \
   --online-iterations 50 \
-  --update-steps 100 \
+  --train-steps 100 \
   --collect-episodes 0
 ```
 

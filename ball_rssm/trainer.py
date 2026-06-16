@@ -30,9 +30,6 @@ from ball_rssm.utils.checkpoint import save_checkpoint
 @dataclass
 class DreamerTrainConfig:
     imagination_horizon: int = 15
-    # Dreamer behavior learning can start from many posterior states in a long
-    # RSSM batch; cap only actor/value imagination, not world-model training.
-    behavior_batch_size: int | None = 4096
     discount: float = 0.99
     lambda_: float = 0.95
     actor_gradient: str = "auto"
@@ -49,8 +46,6 @@ class DreamerTrainConfig:
         self.exploration_mode = normalize_exploration_mode(self.exploration_mode)
         if self.imagination_horizon < 2:
             raise ValueError("imagination_horizon must be at least 2")
-        if self.behavior_batch_size is not None and self.behavior_batch_size <= 0:
-            raise ValueError("behavior_batch_size must be positive or None")
         if not 0.0 <= self.discount <= 1.0:
             raise ValueError("discount must be in [0, 1]")
         if not 0.0 <= self.lambda_ <= 1.0:
@@ -115,7 +110,7 @@ class Trainer:
     def train_online(
         self,
         iterations: int,
-        update_steps: int,
+        train_steps: int,
         collect_episodes: int,
         batch_size: int,
         seq_len: int,
@@ -131,8 +126,8 @@ class Trainer:
 
         if iterations <= 0:
             raise ValueError("iterations must be positive")
-        if update_steps <= 0:
-            raise ValueError("update_steps must be positive")
+        if train_steps <= 0:
+            raise ValueError("train_steps must be positive")
         if collect_episodes < 0:
             raise ValueError("collect_episodes must be non-negative")
         if self.buffer.size <= 0:
@@ -162,7 +157,7 @@ class Trainer:
             self.actor.train()
             self.critic.train()
             train_metrics = self.train_replay_updates(
-                update_steps=update_steps,
+                train_steps=train_steps,
                 batch_size=batch_size,
                 seq_len=seq_len,
                 val_fraction=val_fraction,
@@ -259,7 +254,7 @@ class Trainer:
 
     def train_replay_updates(
         self,
-        update_steps: int,
+        train_steps: int,
         batch_size: int,
         seq_len: int,
         val_fraction: float,
@@ -271,7 +266,7 @@ class Trainer:
         iterator = iter(train_loader)
         totals: dict[str, float] = {}
         count = 0
-        for _ in tqdm(range(update_steps), desc=desc, leave=False):
+        for _ in tqdm(range(train_steps), desc=desc, leave=False):
             try:
                 batch = next(iterator)
             except StopIteration:
@@ -318,9 +313,7 @@ class Trainer:
             # PlaNet would stop here and use the frozen model in a CEM controller.
             posterior = self.world_model.forward(obs, action, is_first)["posterior"]
             assert isinstance(posterior, dict)
-            # TODO: why we need full_start and start? or start here is prev state?
-            full_start = flatten_state_sequence(posterior, drop_last=True)
-            start = sample_state_batch(full_start, self.config.behavior_batch_size)
+            start = flatten_state_sequence(posterior, drop_last=True)
 
         # DreamerV1 trains policy and value in the same loop as dynamics; there
         # is no separate planning module or post-hoc action-sequence optimizer.
@@ -358,8 +351,7 @@ class Trainer:
         metrics = dict(metrics)
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
-        metrics["behavior_start_count"] = torch.as_tensor(full_start.h.shape[0], device=obs.device)
-        metrics["behavior_sample_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
+        metrics["behavior_start_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
         metrics["world_grad_norm"] = world_grad.detach()
         metrics["actor_grad_norm"] = actor_grad.detach()
         metrics["critic_grad_norm"] = critic_grad.detach()
@@ -377,8 +369,7 @@ class Trainer:
         world_loss, metrics = self.world_model.loss(obs, action, reward, done, terminated, is_first)
         posterior = self.world_model.forward(obs, action, is_first)["posterior"]
         assert isinstance(posterior, dict)
-        full_start = flatten_state_sequence(posterior, drop_last=True)
-        start = sample_state_batch(full_start, self.config.behavior_batch_size)
+        start = flatten_state_sequence(posterior, drop_last=True)
         actor_loss, actor_metrics = dreamer_actor_loss_from_start(
             world_model=self.world_model,
             critic=self.critic,
@@ -401,8 +392,7 @@ class Trainer:
         metrics = dict(metrics)
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
-        metrics["behavior_start_count"] = torch.as_tensor(full_start.h.shape[0], device=obs.device)
-        metrics["behavior_sample_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
+        metrics["behavior_start_count"] = torch.as_tensor(start.h.shape[0], device=obs.device)
         metrics["world_grad_norm"] = torch.zeros((), device=obs.device)
         metrics["actor_grad_norm"] = torch.zeros((), device=obs.device)
         metrics["critic_grad_norm"] = torch.zeros((), device=obs.device)
@@ -875,24 +865,6 @@ def flatten_state_sequence(states: dict[str, torch.Tensor], drop_last: bool) -> 
         mean=flatten_optional("mean"),
         std=flatten_optional("std"),
         logits=flatten_optional("logits"),
-    )
-
-
-def sample_state_batch(state: RSSMState, max_states: int | None) -> RSSMState:
-    """Subsample posterior starts used for actor/value imagination."""
-
-    # This keeps long RSSM sequences practical for Dreamer behavior updates.
-    # It is intentionally after replay sampling, so dynamics still see all data.
-    total = state.h.shape[0]
-    if max_states is None or total <= max_states:
-        return state
-    index = torch.randperm(total, device=state.h.device)[:max_states]
-    return RSSMState(
-        h=state.h[index],
-        z=state.z[index],
-        mean=None if state.mean is None else state.mean[index],
-        std=None if state.std is None else state.std[index],
-        logits=None if state.logits is None else state.logits[index],
     )
 
 

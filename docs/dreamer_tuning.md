@@ -8,10 +8,10 @@ as a practical checklist for getting stable DM-Control and ball-balance runs.
 
 | Area | Parameter | Current default | Increase when | Decrease when | Notes |
 | --- | --- | ---: | --- | --- | --- |
-| Replay | `seq_len` | `50` for DM-Control, often `200` for ball balance | Long-horizon prediction matters and memory allows it | Pixel training is slow or unstable | World-model loss sees the full sequence. Behavior imagination starts are capped separately. |
+| Replay | `seq_len` | `50` for DM-Control, often `200` for ball balance | Long-horizon prediction matters and memory allows it | Pixel training is slow or unstable | World-model loss sees the full sequence. Actor/critic imagination starts from flattened posterior states. |
 | Replay | `batch_size` | `128` | Gradients are noisy and memory is available | Pixel model runs out of memory | Pixel runs often need smaller batches first. |
 | Online loop | `seed_episodes` | `20` | Replay is narrow or early actor collapses | You need a fast smoke test | Random seed replay is only a bootstrap. |
-| Online loop | `update_steps` | `100` | Replay grows faster than model learns | Collection is too slow | More updates per collection improves sample reuse. |
+| Online loop | `train_steps` | `100` | Replay grows faster than model learns | Collection is too slow | More updates per collection improves sample reuse. |
 | Online loop | `collect_episodes` | `5` | Policy improves and you want faster replay growth | Model is not learning from current replay | Too much collection with a weak policy can fill replay with poor data. |
 | Model size | `deter_dim` | `128` | Pixel tasks, walker tasks, long horizons | Fast smoke testing | Try `200`, `512`, or larger for serious pixel runs. |
 | Model size | `stoch_dim` | `16` | Latent bottleneck is too small | KL collapses or training is too heavy | For V2, total stochastic feature size is `stoch_dim * discrete_classes`. |
@@ -33,7 +33,6 @@ as a practical checklist for getting stable DM-Control and ball-balance runs.
 | Distribution | `value_head_dist` | `normal` | Usually leave default | Use `mse` for old ablations | Fixed-std Normal value likelihood. |
 | Reward scale | `reward_transform` | `identity` | Rewards have heavy tails | Transformed reward hurts control | Try `symlog` for large reward ranges. |
 | Behavior | `imagination_horizon` | `15` | Task needs longer planning | Actor/critic unstable | Longer imagination increases compounding model error. |
-| Behavior | `behavior_batch_size` | `4096` | GPU has room and updates are noisy | Memory is tight | Caps actor/critic starts, not world-model batch size. |
 | Behavior | `discount` | `0.99` | Long-horizon reward matters | Short tasks or instability | Multiplied by predicted continuation. |
 | Behavior | `lambda` | `0.95` | Returns are too biased | Returns have high variance | TD(lambda) return mixing. |
 | Actor | `actor-gradient` | `auto` | You need a specific ablation | Usually leave default | DM-Control continuous actions resolve to `dynamics`. |
@@ -92,7 +91,7 @@ world model is good.
 
 5. Scale pixels carefully.
 
-Start with smaller `batch-size` and maybe fewer `update-steps`. Once the run is
+Start with smaller `batch-size` and maybe fewer `train-steps`. Once the run is
 stable, increase `deter-dim`, `hidden-dim`, `embed-dim`, `cnn-depth`, and
 possibly `rssm-ensemble`. Pixel tasks can look broken simply because the model
 is too small.
@@ -106,7 +105,7 @@ is too small.
 | KL explodes | Prior cannot track posterior or model too small | Increase model size, try `--layer-norm`, tune `kl_balance`, lower world LR. |
 | Actor loss improves but real return does not | Model exploitation or poor replay coverage | Collect more seed data, lower imagination horizon, validate open-loop predictions. |
 | Critic loss explodes | Targets too noisy or long-horizon model error | Lower `critic-lr`, lower `imagination-horizon`, lower `target-tau`, improve world model first. |
-| Pixel training runs out of memory | CNN/model/batch too large | Lower `batch-size`, lower `behavior-batch-size`, lower `cnn-depth`, shorten `seq-len`. |
+| Pixel training runs out of memory | CNN/model/batch too large | Lower `batch-size`, lower `cnn-depth`, shorten `seq-len`. |
 | V2 pixel task unstable | Prior/categorical dynamics too hard | Add `--layer-norm`, try `--rssm-ensemble 5`, increase `deter-dim`, reduce LR. |
 | Collection return flatlines | Exploration too weak or replay too narrow | Increase seed episodes, use policy entropy for V2, tune external noise for V1. |
 
@@ -122,7 +121,7 @@ Minimum useful plots:
 - `train/kl_loss`, `train/raw_kl`, `train/dynamics_kl_loss`
 - `train/actor_loss`, `train/critic_loss`
 - `collect/collect_avg_reward`
-- `val_open_loop/obs_h1`, `val_open_loop/obs_h5`, `val_open_loop/reward_h1`
+- `val_prior_rollout/obs_h1`, `val_prior_rollout/obs_h5`, `val_prior_rollout/reward_h1`
 
 If these disagree, trust validation and collection metrics over training loss.
 Training loss can improve while the actor overfits imagined model errors.

@@ -32,12 +32,11 @@ Example
   --buffer-episodes 2000 \
   --max-episode-steps 200 \
   --online-iterations 100 \
-  --update-steps 100 \
+  --train-steps 100 \
   --collect-episodes 5 \
   --seq-len 50 \
   --batch-size 128 \
-  --behavior-batch-size 1024 \
-  --imagination-horizon 15
+    --imagination-horizon 15
 
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
   --checkpoint runs/dmc_reacher_easy_v2_0616/checkpoints/best.pt \
@@ -75,12 +74,11 @@ Example
   --buffer-episodes 2000 \
   --max-episode-steps 200 \
   --online-iterations 100 \
-  --update-steps 100 \
+  --train-steps 100 \
   --collect-episodes 5 \
   --seq-len 50 \
   --batch-size 64 \
-  --behavior-batch-size 1024 \
-  --imagination-horizon 15
+    --imagination-horizon 15
 
 
 .venv-dm-control/bin/python scripts/run_dm_control_policy.py \
