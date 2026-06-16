@@ -40,33 +40,31 @@ Auf headless Maschinen kannst du EGL fürs Rendering verwenden:
   --frames-out outputs/smoke/cartpole
 ```
 
+## YAML-Konfigurationen
+
+Die DM-Control-Trainingsskripte können jetzt flache YAML-Dateien laden. Die mitgelieferten Presets dokumentieren die Hyperparameter direkt in Kommentaren:
+
+```text
+configs/dm_control_dreamer_v1.yaml
+configs/dm_control_dreamer_v2.yaml
+```
+
+CLI-Flags überschreiben Werte aus der YAML-Datei. So kannst du ein Preset behalten und nur Task, Run-Verzeichnis oder Pixel-Optionen ändern.
+
 ## Dreamer V1 Trainieren
 
 Starte mit Zustandsbeobachtungen. Das ist der schnellste Weg, um World Model, Actor, Critic, Replay und Checkpointing-Schleife zu prüfen.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
-  --domain cartpole \
-  --task swingup \
-  --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v1_0615 \
-  --dreamer-version v1 \
-  --seed-episodes 20 \
-  --buffer-episodes 2000 \
-  --max-episode-steps 200 \
-  --online-iterations 100 \
-  --update-steps 100 \
-  --collect-episodes 5 \
-  --seq-len 50 \
-  --batch-size 128 \
-  --imagination-horizon 15
+  --config configs/dm_control_dreamer_v1.yaml
 ```
 
 Checkpoints und Replay werden hier geschrieben:
 
 ```text
-runs/dmc_cartpole_swingup_v1/checkpoints/
-runs/dmc_cartpole_swingup_v1/replay/latest.npz
+runs/dmc_cartpole_swingup_v1_yaml/checkpoints/
+runs/dmc_cartpole_swingup_v1_yaml/replay/latest.npz
 ```
 
 ## Dreamer V2 Trainieren
@@ -75,35 +73,17 @@ V2 nutzt den kategorischen RSSM-Pfad. Für kontinuierliche DM-Control-Aktionen w
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
-  --domain cartpole \
-  --task swingup \
-  --obs-type state \
-  --run-dir runs/dmc_cartpole_swingup_v2_0615 \
-  --dreamer-version v2 \
-  --stoch-dim 16 \
-  --discrete-classes 32 \
-  --kl-balance 0.8 \
-  --kl-free 0.0 \
-  --kl-free-avg \
-  --decoder-dist normal \
-  --reward-head-dist normal \
-  --value-head-dist normal \
-  --seed-episodes 20 \
-  --buffer-episodes 2000 \
-  --max-episode-steps 200 \
-  --online-iterations 100 \
-  --update-steps 100 \
-  --collect-episodes 5 \
-  --seq-len 50 \
-  --batch-size 128 \
-  --imagination-horizon 15
+  --config configs/dm_control_dreamer_v2.yaml
 ```
 
-Für schwierigere V2-Aufgaben, besonders Pixel- oder Lokomotionsaufgaben, probiere die referenzorientierten Stabilitätsoptionen:
+Für andere Aufgaben kannst du das Preset direkt überschreiben:
 
 ```bash
-  --layer-norm \
-  --rssm-ensemble 5
+.venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --config configs/dm_control_dreamer_v2.yaml \
+  --domain reacher \
+  --task easy \
+  --run-dir runs/dmc_reacher_easy_v2_yaml
 ```
 
 ## Pixel-Training
@@ -114,61 +94,24 @@ Die Standard-Pixelarchitektur nutzt Dreamer-artige CNN-Optionen: Encoder-Kernels
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
-  --domain cartpole \
-  --task swingup \
+  --config configs/dm_control_dreamer_v1.yaml \
   --obs-type pixel \
-  --height 64 \
-  --width 64 \
-  --cnn-depth 48 \
-  --encoder-kernels 4,4,4,4 \
-  --decoder-kernels 5,5,6,6 \
-  --camera-id 0 \
   --mujoco-gl egl \
-  --run-dir runs/dmc_cartpole_swingup_pixel_v1_0615 \
-  --dreamer-version v1 \
-  --seed-episodes 20 \
   --buffer-episodes 1000 \
-  --max-episode-steps 200 \
-  --online-iterations 100 \
-  --update-steps 100 \
-  --collect-episodes 5 \
-  --seq-len 50 \
-  --batch-size 128 \
-  --imagination-horizon 15
+  --batch-size 64 \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v1_yaml
 ```
 
-Pixel-Training ist deutlich schwerer als State-Training. Verwende zuerst eine kleine `--batch-size`.
+Für `cartpole` verwendet Pixel-Training die feste Kamera `--camera-id 0` mit `--camera-fovy 70`, damit mehr von der Schiene sichtbar bleibt, ohne die `64x64`-Eingabeform zu ändern. Pixel-Training ist deutlich schwerer als State-Training. Verwende zuerst eine kleine `--batch-size`.
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
-  --domain cartpole \
-  --task swingup \
+  --config configs/dm_control_dreamer_v2.yaml \
   --obs-type pixel \
-  --height 64 \
-  --width 64 \
-  --cnn-depth 48 \
-  --encoder-kernels 4,4,4,4 \
-  --decoder-kernels 5,5,6,6 \
-  --camera-id 0 \
   --mujoco-gl egl \
-  --run-dir runs/dmc_cartpole_swingup_pixel_v2_0615 \
-  --dreamer-version v2 \
-  --stoch-dim 16 \
-  --discrete-classes 32 \
-  --layer-norm \
-  --rssm-ensemble 5 \
-  --kl-balance 0.8 \
-  --kl-free 0.0 \
-  --kl-free-avg \
-  --seed-episodes 20 \
   --buffer-episodes 1000 \
-  --max-episode-steps 200 \
-  --online-iterations 100 \
-  --update-steps 100 \
-  --collect-episodes 5 \
-  --seq-len 50 \
-  --batch-size 128 \
-  --imagination-horizon 15
+  --batch-size 64 \
+  --run-dir runs/dmc_cartpole_swingup_pixel_v2_yaml
 ```
 
 ## Trainingsmetriken Und Loss-Plots
@@ -271,17 +214,15 @@ Danach kannst du mit dem DM-Control-Trainer aus diesem Replay trainieren:
 
 ```bash
 .venv-dm-control/bin/python scripts/train_dm_control_dreamer.py \
+  --config configs/dm_control_dreamer_v1.yaml \
   --dataset data/dmc_walker_walk_random_state.npz \
   --run-dir runs/dmc_walker_walk_offline_v1 \
   --domain walker \
   --task walk \
   --obs-type state \
-  --dreamer-version v1 \
   --online-iterations 50 \
   --update-steps 100 \
-  --collect-episodes 0 \
-  --seq-len 50 \
-  --batch-size 128
+  --collect-episodes 0
 ```
 
 ## Implementierungsnotizen

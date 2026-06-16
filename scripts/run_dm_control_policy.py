@@ -105,6 +105,12 @@ def infer_dm_config(checkpoint: dict[str, Any], args: argparse.Namespace) -> DMC
     domain = args.domain or str(dm_state.get("domain", "cartpole"))
     task = args.task or str(dm_state.get("task", "swingup"))
     obs_type = args.obs_type or str(dm_state.get("obs_type", "state"))
+    camera_id = args.camera_id
+    if camera_id is None and dm_state.get("camera_id") is not None:
+        camera_id = int(dm_state["camera_id"])
+    camera_fovy = args.camera_fovy
+    if camera_fovy is None and dm_state.get("camera_fovy") is not None:
+        camera_fovy = float(dm_state["camera_fovy"])
     return DMControlConfig(
         domain=domain,
         task=task,
@@ -112,7 +118,8 @@ def infer_dm_config(checkpoint: dict[str, Any], args: argparse.Namespace) -> DMC
         action_repeat=args.action_repeat or int(dm_state.get("action_repeat", 1)),
         height=args.height or int(dm_state.get("height", 64)),
         width=args.width or int(dm_state.get("width", 64)),
-        camera_id=args.camera_id if args.camera_id is not None else int(dm_state.get("camera_id", 0)),
+        camera_id=camera_id,
+        camera_fovy=camera_fovy,
         mujoco_gl=args.mujoco_gl or dm_state.get("mujoco_gl"),
     )
 
@@ -129,6 +136,7 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--camera-id", type=int, default=None)
+    parser.add_argument("--camera-fovy", type=float, default=None)
     parser.add_argument("--mujoco-gl", choices=["egl", "osmesa", "glfw"], default=None)
     parser.add_argument("--deterministic", action="store_true", default=True)
     parser.add_argument("--stochastic", dest="deterministic", action="store_false")

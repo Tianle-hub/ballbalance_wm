@@ -7,7 +7,7 @@ import json
 import sys
 from math import prod
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -25,6 +25,13 @@ from scripts.train_dreamer import find_resume_checkpoint
 
 
 def parse_int_tuple(value: str) -> tuple[int, ...]:
+    if isinstance(value, (list, tuple)):
+        parsed = tuple(int(item) for item in value)
+        if not parsed:
+            raise argparse.ArgumentTypeError("expected at least one integer")
+        if any(item <= 0 for item in parsed):
+            raise argparse.ArgumentTypeError("all integer tuple values must be positive")
+        return parsed
     parts = [part.strip() for part in value.split(",") if part.strip()]
     if not parts:
         raise argparse.ArgumentTypeError("expected a comma-separated integer list")
@@ -37,8 +44,9 @@ def parse_int_tuple(value: str) -> tuple[int, ...]:
     return parsed
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None, help="Optional flat YAML config file. CLI flags override YAML values.")
     parser.add_argument("--domain", default="cartpole")
     parser.add_argument("--task", default="swingup")
     parser.add_argument("--obs-type", choices=["state", "pixel"], default="state")
@@ -56,7 +64,8 @@ def main() -> None:
     parser.add_argument("--action-repeat", type=int, default=1)
     parser.add_argument("--height", type=int, default=64)
     parser.add_argument("--width", type=int, default=64)
-    parser.add_argument("--camera-id", type=int, default=0)
+    parser.add_argument("--camera-id", type=int, default=None)
+    parser.add_argument("--camera-fovy", type=float, default=None)
     parser.add_argument("--mujoco-gl", choices=["egl", "osmesa", "glfw"], default=None)
     parser.add_argument("--world-lr", type=float, default=3e-4)
     parser.add_argument("--actor-lr", type=float, default=8e-5)
@@ -107,7 +116,132 @@ def main() -> None:
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--resume-from", default=None)
-    args = parser.parse_args()
+    return parser
+
+
+def normalize_config_key(key: object) -> str:
+    normalized = str(key).strip().replace("-", "_")
+    if normalized == "lambda":
+        return "lambda_"
+    return normalized
+
+
+def strip_inline_comment(value: str) -> str:
+    quote: str | None = None
+    bracket_depth = 0
+    out: list[str] = []
+    for index, char in enumerate(value):
+        if quote is not None:
+            out.append(char)
+            if char == quote and (index == 0 or value[index - 1] != "\\"):
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            out.append(char)
+            continue
+        if char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        if char == "#" and bracket_depth == 0 and (index == 0 or value[index - 1].isspace()):
+            break
+        out.append(char)
+    return "".join(out).strip()
+
+
+def parse_simple_yaml_scalar(value: str) -> object:
+    value = strip_inline_comment(value)
+    if value == "":
+        return None
+    lowered = value.lower()
+    if lowered in {"null", "none", "~"}:
+        return None
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [parse_simple_yaml_scalar(part.strip()) for part in inner.split(",")]
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def parse_simple_yaml(text: str, path: Path) -> dict[str, object]:
+    """Parse the flat YAML subset used by the checked-in training presets."""
+
+    data: dict[str, object] = {}
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw_line[:1].isspace():
+            raise ValueError(
+                f"{path}:{line_number}: nested YAML is not supported without PyYAML; "
+                "use flat 'key: value' entries or install PyYAML."
+            )
+        if ":" not in raw_line:
+            raise ValueError(f"{path}:{line_number}: expected 'key: value'")
+        key, value = raw_line.split(":", 1)
+        key = normalize_config_key(key)
+        if not key:
+            raise ValueError(f"{path}:{line_number}: empty config key")
+        data[key] = parse_simple_yaml_scalar(value.strip())
+    return data
+
+
+def load_yaml_config(path: str | Path) -> dict[str, object]:
+    config_path = Path(path)
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        raw = parse_simple_yaml(text, config_path)
+    else:
+        loaded = yaml.safe_load(text)
+        if loaded is None:
+            raw = {}
+        elif isinstance(loaded, dict):
+            raw = {normalize_config_key(key): value for key, value in loaded.items()}
+        else:
+            raise ValueError(f"{config_path} must contain a YAML mapping")
+    return {normalize_config_key(key): value for key, value in raw.items()}
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = build_parser()
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", default=None)
+    config_args, _ = config_parser.parse_known_args(argv)
+    if config_args.config is not None:
+        try:
+            config_values = load_yaml_config(config_args.config)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        valid_keys = {action.dest for action in parser._actions}
+        unknown = sorted(set(config_values) - valid_keys)
+        if unknown:
+            parser.error(f"unknown config key(s) in {config_args.config}: {', '.join(unknown)}")
+        parser.set_defaults(**config_values)
+    args = parser.parse_args(argv)
+    args.encoder_kernels = parse_int_tuple(args.encoder_kernels)
+    args.decoder_kernels = parse_int_tuple(args.decoder_kernels)
+    return args
+
+
+def main() -> None:
+    args = parse_args()
 
     set_seed(args.seed)
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
@@ -120,6 +254,7 @@ def main() -> None:
         height=args.height,
         width=args.width,
         camera_id=args.camera_id,
+        camera_fovy=args.camera_fovy,
         mujoco_gl=args.mujoco_gl,
     )
 

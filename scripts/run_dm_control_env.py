@@ -14,6 +14,10 @@ import sys
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ball_rssm.envs.dm_control import DMControlConfig, resolve_camera_fovy, resolve_camera_id
+
 
 def sample_bounded_action(spec, rng: np.random.Generator) -> np.ndarray:
     """Sample a random action from a dm_env bounded action spec."""
@@ -70,7 +74,8 @@ def main() -> None:
     parser.add_argument("--render", action="store_true", help="Render RGB frames from the physics camera.")
     parser.add_argument("--height", type=int, default=64)
     parser.add_argument("--width", type=int, default=64)
-    parser.add_argument("--camera-id", type=int, default=0)
+    parser.add_argument("--camera-id", type=int, default=None)
+    parser.add_argument("--camera-fovy", type=float, default=None)
     parser.add_argument("--render-every", type=int, default=10)
     parser.add_argument("--frames-out", default=None, help="Optional directory for rendered PNG frames.")
     parser.add_argument("--viewer", action="store_true", help="Launch the live dm_control viewer.")
@@ -89,6 +94,18 @@ def main() -> None:
         help="Set MUJOCO_GL before importing dm_control. Use glfw for the live viewer.",
     )
     args = parser.parse_args()
+    dm_config = DMControlConfig(
+        domain=args.domain,
+        task=args.task,
+        obs_type="pixel" if args.render else "state",
+        height=args.height,
+        width=args.width,
+        camera_id=args.camera_id,
+        camera_fovy=args.camera_fovy,
+        mujoco_gl=args.mujoco_gl,
+    )
+    camera_id = resolve_camera_id(dm_config)
+    camera_fovy = resolve_camera_fovy(dm_config, camera_id)
 
     configure_gl_backend(args.mujoco_gl)
 
@@ -100,6 +117,8 @@ def main() -> None:
 
     rng = np.random.default_rng(args.seed)
     env = suite.load(domain_name=args.domain, task_name=args.task, task_kwargs={"random": args.seed})
+    if camera_fovy is not None:
+        env.physics.model.cam_fovy[camera_id] = float(camera_fovy)
     action_spec = env.action_spec()
     obs_spec = env.observation_spec()
     frames_dir = Path(args.frames_out) if args.frames_out is not None else None
@@ -157,7 +176,7 @@ def main() -> None:
             frame = env.physics.render(
                 height=args.height,
                 width=args.width,
-                camera_id=args.camera_id,
+                camera_id=camera_id,
             )
             rendered += 1
             if frames_dir is not None:

@@ -340,6 +340,7 @@ def collect_random_dm_control(
         "action_repeat": np.asarray(config.action_repeat, dtype=np.int32),
         "height": np.asarray(config.height, dtype=np.int32),
         "width": np.asarray(config.width, dtype=np.int32),
-        "camera_id": np.asarray(config.camera_id, dtype=np.int32),
+        "camera_id": np.asarray(base_env.camera_id, dtype=np.int32),
+        "camera_fovy": np.asarray(np.nan if base_env.camera_fovy is None else base_env.camera_fovy, dtype=np.float32),
         "obs_keys": np.asarray(env.obs_keys),
     }

@@ -20,11 +20,16 @@ class DMControlConfig:
     action_repeat: int = 1
     height: int = 64
     width: int = 64
-    camera_id: int = 0
+    camera_id: int | None = None
+    camera_fovy: float | None = None
     mujoco_gl: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        data = asdict(self)
+        camera_id = resolve_camera_id(self)
+        data["camera_id"] = camera_id
+        data["camera_fovy"] = resolve_camera_fovy(self, camera_id)
+        return data
 
 
 class DMControlEnv:
@@ -41,11 +46,14 @@ class DMControlEnv:
         from dm_control import suite
 
         self.config = config
+        self.camera_id = resolve_camera_id(config)
+        self.camera_fovy = resolve_camera_fovy(config, self.camera_id)
         self._env = suite.load(
             domain_name=config.domain,
             task_name=config.task,
             task_kwargs={"random": seed},
         )
+        self._apply_camera_overrides()
         self._obs_keys = tuple(self._env.observation_spec().keys())
         self._action_spec = self._env.action_spec()
         self.action_low = np.asarray(self._action_spec.minimum, dtype=np.float32)
@@ -92,8 +100,13 @@ class DMControlEnv:
         return self._env.physics.render(
             height=self.config.height,
             width=self.config.width,
-            camera_id=self.config.camera_id,
+            camera_id=self.camera_id,
         )
+
+    def _apply_camera_overrides(self) -> None:
+        if self.camera_fovy is None:
+            return
+        self._env.physics.model.cam_fovy[self.camera_id] = float(self.camera_fovy)
 
     def sample_random_action(self, rng: np.random.Generator) -> np.ndarray:
         return rng.uniform(self.action_low, self.action_high).astype(np.float32)
@@ -219,6 +232,25 @@ def preprocess_pixel_frame(frame: np.ndarray) -> np.ndarray:
     if frame.ndim != 3 or frame.shape[-1] != 3:
         raise ValueError("pixel frame must have shape [height, width, 3]")
     return np.moveaxis(frame.astype(np.float32) / 255.0 - 0.5, -1, 0)
+
+
+def resolve_camera_id(config: DMControlConfig) -> int:
+    """Resolve a training-friendly camera when the caller did not choose one."""
+
+    if config.camera_id is not None:
+        return int(config.camera_id)
+    return 0
+
+
+def resolve_camera_fovy(config: DMControlConfig, camera_id: int | None = None) -> float | None:
+    """Return a wider fixed camera FOV for cartpole pixel observations."""
+
+    if config.camera_fovy is not None:
+        return float(config.camera_fovy)
+    resolved_camera_id = resolve_camera_id(config) if camera_id is None else int(camera_id)
+    if config.obs_type == "pixel" and config.domain == "cartpole" and resolved_camera_id == 0:
+        return 70.0
+    return None
 
 
 def save_dm_control_dataset(path: str | Path, arrays: dict[str, np.ndarray]) -> None:

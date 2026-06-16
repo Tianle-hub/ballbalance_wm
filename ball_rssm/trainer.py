@@ -112,46 +112,6 @@ class Trainer:
 
         self.target_critic.requires_grad_(False)
 
-    def train_offline(
-        self,
-        epochs: int,
-        batch_size: int,
-        seq_len: int,
-        val_fraction: float,
-        seed: int,
-        train_args: dict[str, object],
-        start_epoch: int = 0,
-        best_val_loss: float = float("inf"),
-    ) -> None:
-        train_loader, val_loader = self.make_dataloaders(batch_size, seq_len, val_fraction, seed)
-
-        if start_epoch >= epochs:
-            print(f"checkpoint is already at epoch {start_epoch}; target epochs={epochs}, nothing to train")
-            self.close()
-            return
-
-        for epoch in range(start_epoch + 1, epochs + 1):
-            self.world_model.train()
-            self.actor.train()
-            self.critic.train()
-            train_metrics = self.run_epoch(train_loader, train=True, desc=f"epoch {epoch} train")
-
-            self.world_model.eval()
-            self.actor.eval()
-            self.critic.eval()
-            with torch.no_grad():
-                val_metrics = self.run_epoch(val_loader, train=False, desc=f"epoch {epoch} val")
-                open_loop = self.validation_open_loop_losses(val_loader, horizons=(1, 5, 10, 25, 50))
-
-            val_loss = val_metrics["total_loss"]
-            is_best = val_loss < best_val_loss
-            best_val_loss = min(best_val_loss, val_loss)
-            self.save_checkpoint(epoch, best_val_loss, train_args, is_best)
-            self.log_metrics(epoch, train_metrics, val_metrics, open_loop)
-            self.print_epoch(epoch, train_metrics, val_metrics, open_loop)
-
-        self.close()
-
     def train_online(
         self,
         iterations: int,
@@ -201,7 +161,7 @@ class Trainer:
             self.world_model.train()
             self.actor.train()
             self.critic.train()
-            train_metrics = self.run_update_steps(
+            train_metrics = self.train_replay_updates(
                 update_steps=update_steps,
                 batch_size=batch_size,
                 seq_len=seq_len,
@@ -215,8 +175,11 @@ class Trainer:
             self.critic.eval()
             with torch.no_grad():
                 _, val_loader = self.make_dataloaders(batch_size, seq_len, val_fraction, seed + iteration)
-                val_metrics = self.run_epoch(val_loader, train=False, desc=f"iter {iteration} val")
-                open_loop = self.validation_open_loop_losses(val_loader, horizons=(1, 5, 10, 25, 50))
+                val_metrics = self.evaluate_replay_loader(val_loader, desc=f"iter {iteration} val")
+                prior_rollout_metrics = self.validation_prior_rollout_losses(
+                    val_loader,
+                    horizons=(1, 5, 10, 25, 50),
+                )
 
             episode_horizon_steps = self.buffer.max_episode_steps
             collect_metrics = self.collect_actor_episodes(
@@ -242,8 +205,8 @@ class Trainer:
                     exploration_noise=collect_metrics["exploration_noise"],
                     configured_exploration_noise=exploration_noise,
                 )
-            self.log_online_metrics(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
-            self.print_online_iteration(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
+            self.log_online_metrics(iteration, train_metrics, val_metrics, prior_rollout_metrics, collect_metrics)
+            self.print_online_iteration(iteration, train_metrics, val_metrics, prior_rollout_metrics, collect_metrics)
 
             exploration_noise = max(
                 self.config.min_exploration_noise,
@@ -269,7 +232,8 @@ class Trainer:
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
         return train_loader, val_loader
 
-    def run_epoch(self, loader: DataLoader, train: bool, desc: str) -> dict[str, float]:
+    def evaluate_replay_loader(self, loader: DataLoader, desc: str) -> dict[str, float]:
+        """Evaluate every batch in a validation loader without optimizer steps."""
         totals: dict[str, float] = {}
         count = 0
         for batch in tqdm(loader, desc=desc, leave=False):
@@ -278,24 +242,14 @@ class Trainer:
             action = self.normalizer.normalize_action(batch["action"])
             reward = self.normalizer.normalize_reward(batch["reward"]) if "reward" in batch else None
 
-            if train:
-                metrics = self.train_batch(
-                    obs,
-                    action,
-                    reward,
-                    batch.get("done"),
-                    batch.get("terminated"),
-                    batch.get("is_first"),
-                )
-            else:
-                metrics = self.evaluate_batch(
-                    obs,
-                    action,
-                    reward,
-                    batch.get("done"),
-                    batch.get("terminated"),
-                    batch.get("is_first"),
-                )
+            metrics = self.evaluate_batch(
+                obs,
+                action,
+                reward,
+                batch.get("done"),
+                batch.get("terminated"),
+                batch.get("is_first"),
+            )
 
             batch_size = obs.shape[0]
             count += batch_size
@@ -303,7 +257,7 @@ class Trainer:
                 totals[key] = totals.get(key, 0.0) + float(value.detach().cpu()) * batch_size
         return {key: value / max(count, 1) for key, value in totals.items()}
 
-    def run_update_steps(
+    def train_replay_updates(
         self,
         update_steps: int,
         batch_size: int,
@@ -312,6 +266,7 @@ class Trainer:
         seed: int,
         desc: str,
     ) -> dict[str, float]:
+        """Train for a fixed number of replay batches, cycling the loader if needed."""
         train_loader, _ = self.make_dataloaders(batch_size, seq_len, val_fraction, seed)
         iterator = iter(train_loader)
         totals: dict[str, float] = {}
@@ -539,6 +494,7 @@ class Trainer:
         self.actor.eval()
         try:
             for episode in range(num_episodes):
+                # default collect five times per training iteration
                 episode_data, total_reward, length = self._rollout_actor_episode(
                     env=env,
                     seed=seed + episode,
@@ -685,7 +641,14 @@ class Trainer:
             return 0.0
         return exploration_noise
 
-    def validation_open_loop_losses(self, loader: DataLoader, horizons: tuple[int, ...]) -> dict[str, float]:
+    def validation_prior_rollout_losses(self, loader: DataLoader, horizons: tuple[int, ...]) -> dict[str, float]:
+        """Measure multi-step prior prediction after a short posterior context.
+
+        The RSSM first observes `context_len` real steps, then predicts future
+        observations/rewards using only actions and its prior dynamics. This is
+        often called an open-loop rollout, but "prior rollout" makes the intent
+        explicit here.
+        """
         batch = next(iter(loader), None)
         if batch is None:
             return {f"obs_h{h}": float("nan") for h in horizons}
@@ -747,13 +710,13 @@ class Trainer:
         epoch: int,
         train_metrics: dict[str, float],
         val_metrics: dict[str, float],
-        open_loop: dict[str, float],
+        prior_rollout_metrics: dict[str, float],
     ) -> None:
         if self.writer is None:
             return
         log_metrics = {f"train/{key}": value for key, value in train_metrics.items()}
         log_metrics.update({f"val/{key}": value for key, value in val_metrics.items()})
-        log_metrics.update({f"val_open_loop/{key}": value for key, value in open_loop.items()})
+        log_metrics.update({f"val_prior_rollout/{key}": value for key, value in prior_rollout_metrics.items()})
         for key, value in log_metrics.items():
             self.writer.add_scalar(key, value, epoch)
 
@@ -762,11 +725,11 @@ class Trainer:
         iteration: int,
         train_metrics: dict[str, float],
         val_metrics: dict[str, float],
-        open_loop: dict[str, float],
+        prior_rollout_metrics: dict[str, float],
         collect_metrics: dict[str, float],
     ) -> None:
-        self.log_metrics(iteration, train_metrics, val_metrics, open_loop)
-        self.write_metrics_jsonl(iteration, train_metrics, val_metrics, open_loop, collect_metrics)
+        self.log_metrics(iteration, train_metrics, val_metrics, prior_rollout_metrics)
+        self.write_metrics_jsonl(iteration, train_metrics, val_metrics, prior_rollout_metrics, collect_metrics)
         if self.writer is None:
             return
         for key, value in collect_metrics.items():
@@ -778,13 +741,13 @@ class Trainer:
         step: int,
         train_metrics: dict[str, float],
         val_metrics: dict[str, float],
-        open_loop: dict[str, float],
+        prior_rollout_metrics: dict[str, float],
         collect_metrics: dict[str, float] | None = None,
     ) -> None:
         record: dict[str, object] = {"step": int(step)}
         record.update({f"train/{key}": float(value) for key, value in train_metrics.items()})
         record.update({f"val/{key}": float(value) for key, value in val_metrics.items()})
-        record.update({f"val_open_loop/{key}": float(value) for key, value in open_loop.items()})
+        record.update({f"val_prior_rollout/{key}": float(value) for key, value in prior_rollout_metrics.items()})
         if collect_metrics is not None:
             for key, value in collect_metrics.items():
                 if np.isfinite(value):
@@ -793,30 +756,14 @@ class Trainer:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     @staticmethod
-    def print_epoch(
-        epoch: int,
-        train_metrics: dict[str, float],
-        val_metrics: dict[str, float],
-        open_loop: dict[str, float],
-    ) -> None:
-        open_loop_str = " ".join(f"{key}={value:.5f}" for key, value in open_loop.items())
-        print(
-            f"epoch={epoch:03d} train={train_metrics['total_loss']:.5f} "
-            f"val={val_metrics['total_loss']:.5f} recon={val_metrics['recon_loss']:.5f} "
-            f"reward={val_metrics['reward_loss']:.5f} kl={val_metrics['kl_loss']:.5f} "
-            f"actor={val_metrics['actor_loss']:.5f} critic={val_metrics['critic_loss']:.5f} "
-            f"{open_loop_str}"
-        )
-
-    @staticmethod
     def print_online_iteration(
         iteration: int,
         train_metrics: dict[str, float],
         val_metrics: dict[str, float],
-        open_loop: dict[str, float],
+        prior_rollout_metrics: dict[str, float],
         collect_metrics: dict[str, float],
     ) -> None:
-        open_loop_str = " ".join(f"{key}={value:.5f}" for key, value in open_loop.items())
+        prior_rollout_str = " ".join(f"{key}={value:.5f}" for key, value in prior_rollout_metrics.items())
         print(
             f"iter={iteration:03d} train={train_metrics['total_loss']:.5f} "
             f"val={val_metrics['total_loss']:.5f} recon={val_metrics['recon_loss']:.5f} "
@@ -826,7 +773,7 @@ class Trainer:
             f"replay_episodes={collect_metrics['replay_episodes']:.0f} "
             f"explore={collect_metrics['exploration_noise']:.3f} "
             f"mode={'policy_entropy' if collect_metrics['exploration_mode_policy_entropy'] else 'noise'} "
-            f"{open_loop_str}"
+            f"{prior_rollout_str}"
         )
 
 

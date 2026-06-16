@@ -102,7 +102,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--run-dir", default="runs/dreamer_ball_v0")
-    parser.add_argument("--train-mode", choices=["offline", "online"], default="offline")
+    parser.add_argument("--train-mode", choices=["online"], default="online")
     parser.add_argument("--dreamer-version", choices=["v1", "v2"], default="v1")
     parser.add_argument(
         "--obs-type",
@@ -188,40 +188,33 @@ def main() -> None:
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     run_dir = Path(args.run_dir)
 
-    if args.train_mode == "offline" and args.dataset is None:
-        parser.error("--dataset is required for --train-mode offline")
-
     initial_bounds = InitialStateBounds(pos=args.pos_bound, vel=args.vel_bound, angle=args.angle_bound)
-    if args.train_mode == "online":
-        replay_resume_path = run_dir / "replay" / "latest.npz"
-        if args.dataset is None and args.resume and replay_resume_path.exists():
-            seed_buffer = Buffer.load(replay_resume_path)
-            print(f"resuming online replay from {replay_resume_path} with {seed_buffer.size} episodes")
-        elif args.dataset is not None:
-            seed_buffer = Buffer.load(args.dataset)
-        else:
-            seed_buffer = Buffer.collect_data(
-                num_episodes=args.seed_episodes,
-                max_episode_steps=args.max_episode_steps,
-                seed=args.seed,
-                mode=args.seed_policy_mode,
-                initial_bounds=initial_bounds,
-                target_bound=args.target_bound,
-                action_noise_std=args.action_noise_std,
-            )
-        if seed_buffer.max_episode_steps != args.max_episode_steps:
-            args.max_episode_steps = seed_buffer.max_episode_steps
-        buffer_capacity = max(args.buffer_episodes, seed_buffer.size)
-        buffer = Buffer.empty(
-            capacity_episodes=buffer_capacity,
-            max_episode_steps=seed_buffer.max_episode_steps,
-            obs_shape=tuple(seed_buffer.obs_buffer.shape[2:]),
-            action_shape=tuple(seed_buffer.action_buffer.shape[2:]),
-        )
-        buffer.append_buffer(seed_buffer)
+    replay_resume_path = run_dir / "replay" / "latest.npz"
+    if args.dataset is None and args.resume and replay_resume_path.exists():
+        seed_buffer = Buffer.load(replay_resume_path)
+        print(f"resuming online replay from {replay_resume_path} with {seed_buffer.size} episodes")
+    elif args.dataset is not None:
+        seed_buffer = Buffer.load(args.dataset)
     else:
-        assert args.dataset is not None
-        buffer = Buffer.load(args.dataset)
+        seed_buffer = Buffer.collect_data(
+            num_episodes=args.seed_episodes,
+            max_episode_steps=args.max_episode_steps,
+            seed=args.seed,
+            mode=args.seed_policy_mode,
+            initial_bounds=initial_bounds,
+            target_bound=args.target_bound,
+            action_noise_std=args.action_noise_std,
+        )
+    if seed_buffer.max_episode_steps != args.max_episode_steps:
+        args.max_episode_steps = seed_buffer.max_episode_steps
+    buffer_capacity = max(args.buffer_episodes, seed_buffer.size)
+    buffer = Buffer.empty(
+        capacity_episodes=buffer_capacity,
+        max_episode_steps=seed_buffer.max_episode_steps,
+        obs_shape=tuple(seed_buffer.obs_buffer.shape[2:]),
+        action_shape=tuple(seed_buffer.action_buffer.shape[2:]),
+    )
+    buffer.append_buffer(seed_buffer)
 
     train_ds = buffer.sequence_dataset(args.seq_len, split="train", val_fraction=args.val_fraction, seed=args.seed)
     train_obs, train_action, train_reward = train_ds.selected_arrays()
@@ -351,32 +344,20 @@ def main() -> None:
         run_dir=run_dir,
         config=dreamer_config,
     )
-    if args.train_mode == "online":
-        iterations = args.online_iterations if args.online_iterations is not None else args.epochs
-        trainer.train_online(
-            iterations=iterations,
-            update_steps=args.update_steps,
-            collect_episodes=args.collect_episodes,
-            batch_size=args.batch_size,
-            seq_len=args.seq_len,
-            val_fraction=args.val_fraction,
-            seed=args.seed,
-            train_args=vars(args),
-            initial_bounds=initial_bounds,
-            start_iteration=start_epoch,
-            best_val_loss=best_val_loss,
-        )
-    else:
-        trainer.train_offline(
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            seq_len=args.seq_len,
-            val_fraction=args.val_fraction,
-            seed=args.seed,
-            train_args=vars(args),
-            start_epoch=start_epoch,
-            best_val_loss=best_val_loss,
-        )
+    iterations = args.online_iterations if args.online_iterations is not None else args.epochs
+    trainer.train_online(
+        iterations=iterations,
+        update_steps=args.update_steps,
+        collect_episodes=args.collect_episodes,
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        val_fraction=args.val_fraction,
+        seed=args.seed,
+        train_args=vars(args),
+        initial_bounds=initial_bounds,
+        start_iteration=start_epoch,
+        best_val_loss=best_val_loss,
+    )
 
 
 if __name__ == "__main__":

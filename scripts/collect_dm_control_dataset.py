@@ -22,7 +22,8 @@ def main() -> None:
     parser.add_argument("--action-repeat", type=int, default=1)
     parser.add_argument("--height", type=int, default=64)
     parser.add_argument("--width", type=int, default=64)
-    parser.add_argument("--camera-id", type=int, default=0)
+    parser.add_argument("--camera-id", type=int, default=None)
+    parser.add_argument("--camera-fovy", type=float, default=None)
     parser.add_argument("--mujoco-gl", choices=["egl", "osmesa", "glfw"], default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", required=True)
@@ -36,6 +37,7 @@ def main() -> None:
         height=args.height,
         width=args.width,
         camera_id=args.camera_id,
+        camera_fovy=args.camera_fovy,
         mujoco_gl=args.mujoco_gl,
     )
     arrays = collect_random_dm_control(
