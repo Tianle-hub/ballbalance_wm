@@ -25,6 +25,7 @@ dist/
 
 # Local datasets and generated artifacts
 /data/
+/data*/
 /old_runs/
 /outputs/
 /artifacts/
