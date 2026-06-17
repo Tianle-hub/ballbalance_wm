@@ -2,12 +2,26 @@ import os
 import pickle
 import torch
 import numpy as np 
-import moviepy.editor as mpy
 
 import matplotlib.pyplot as plt 
 from typing import Iterable
 from torch.nn import Module
-from tensorboardX import SummaryWriter
+
+try:
+    from tensorboardX import SummaryWriter
+except ModuleNotFoundError:
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ModuleNotFoundError:
+        class SummaryWriter:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def add_scalar(self, *args, **kwargs):
+                pass
+
+            def flush(self):
+                pass
 
 
 
@@ -66,6 +80,13 @@ class Logger:
         self.dump_scalars_to_pickle(scalar_dict, step)
 
     def log_videos(self, videos, step, max_videos_to_save=1, fps=20, video_title='video'):
+        try:
+            import moviepy.editor as mpy
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "moviepy is required for video logging. Install moviepy or leave "
+                "--log-video-freq disabled."
+            ) from exc
 
         # max rollout length
         max_videos_to_save = np.min([max_videos_to_save, videos.shape[0]])
@@ -83,7 +104,7 @@ class Logger:
             clip = mpy.ImageSequenceClip(list(videos[i]), fps=fps)
             new_video_title = video_title+'{}_{}'.format(step, i) + '.gif'
             filename = os.path.join(self._log_dir, new_video_title)
-            video.write_gif(filename, fps =fps)
+            clip.write_gif(filename, fps=fps)
 
 
     def dump_scalars_to_pickle(self, metrics, step, log_title=None):

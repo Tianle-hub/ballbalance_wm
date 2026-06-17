@@ -12,6 +12,8 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv_adit/
+.venv-dm-control/
 venv/
 env/
 ENV/

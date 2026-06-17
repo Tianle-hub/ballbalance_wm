@@ -1,4 +1,7 @@
-import gym
+try:
+    import gym
+except ModuleNotFoundError:
+    import gymnasium as gym
 import os
 import sys
 import torch
