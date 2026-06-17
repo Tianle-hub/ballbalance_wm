@@ -9,7 +9,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -67,13 +66,34 @@ def main() -> None:
     dataset = SequenceDataset(args.dataset, seq_len=seq_len, split="all")
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
-    metrics = evaluate(model, loader, normalizer, device, args.context_len, args.horizon, args.num_batches)
+    metrics, curves = evaluate(model, loader, normalizer, device, args.context_len, args.horizon, args.num_batches)
     out_dir = Path(args.checkpoint).resolve().parents[1]
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "eval_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    plot_curve(metrics["open_loop_mse_curve"], out_dir / "open_loop_mse_curve.png")
-    if "open_loop_reward_mse_curve" in metrics:
-        plot_curve(metrics["open_loop_reward_mse_curve"], out_dir / "open_loop_reward_mse_curve.png", ylabel="reward MSE")
+    plot_curve(curves["open_loop_mse_curve"], out_dir / "open_loop_mse_curve.png", ylabel="observation MSE")
+    reward_continuation_curves = {
+        label: curves[label]
+        for label in ("open_loop_reward_mse_curve", "open_loop_continuation_mse_curve")
+        if label in curves
+    }
+    if reward_continuation_curves:
+        plot_curves(
+            reward_continuation_curves,
+            out_dir / "open_loop_reward_continuation_mse_curve.png",
+            ylabel="mean MSE",
+        )
+    if "open_loop_reward_mse_curve" in curves:
+        plot_curve(
+            curves["open_loop_reward_mse_curve"],
+            out_dir / "open_loop_reward_mse_curve.png",
+            ylabel="reward MSE",
+        )
+    if "open_loop_continuation_mse_curve" in curves:
+        plot_curve(
+            curves["open_loop_continuation_mse_curve"],
+            out_dir / "open_loop_continuation_mse_curve.png",
+            ylabel="continuation MSE",
+        )
     print(json.dumps(metrics, indent=2))
 
 
@@ -85,16 +105,14 @@ def evaluate(
     context_len: int,
     horizon: int,
     num_batches: int,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, list[float]]]:
     recon_losses: list[torch.Tensor] = []
     one_step_losses: list[torch.Tensor] = []
     open_loop_losses: list[torch.Tensor] = []
     reward_losses: list[torch.Tensor] = []
     open_loop_reward_losses: list[torch.Tensor] = []
-    curve_sum = torch.zeros(horizon, device=device)
-    reward_curve_sum = torch.zeros(horizon, device=device)
-    curve_count = 0
-    reward_curve_count = 0
+    continuation_losses: list[torch.Tensor] = []
+    open_loop_continuation_losses: list[torch.Tensor] = []
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
@@ -108,9 +126,11 @@ def evaluate(
             recon = out["recon"]
             prior_recon = out["prior_recon"]
             reward_pred = out["reward_pred"]
+            continuation_logit = out["continuation_logit"]
             assert isinstance(recon, torch.Tensor)
             assert isinstance(prior_recon, torch.Tensor)
             assert isinstance(reward_pred, torch.Tensor)
+            assert isinstance(continuation_logit, torch.Tensor)
 
             pred = model.open_loop_predict(obs, action, context_len=context_len, horizon=horizon)
             target_open = obs[:, context_len + 1 : context_len + 1 + horizon]
@@ -124,8 +144,6 @@ def evaluate(
             one_step_losses.append((prior_denorm[:, 1:] - obs_denorm[:, 1:]) ** 2)
             open_err = (pred_denorm - target_denorm) ** 2
             open_loop_losses.append(open_err)
-            curve_sum += open_err.mean(dim=(0, 2))
-            curve_count += 1
 
             if reward is not None:
                 reward_pred_denorm = normalizer.denormalize_reward(reward_pred[:, 1:])
@@ -138,42 +156,88 @@ def evaluate(
                 target_reward_denorm = normalizer.denormalize_reward(target_reward)
                 open_reward_err = (open_reward_denorm - target_reward_denorm) ** 2
                 open_loop_reward_losses.append(open_reward_err)
-                reward_curve_sum += open_reward_err.mean(dim=(0, 2))
-                reward_curve_count += 1
+
+            continuation_source = batch.get("terminated", batch.get("done"))
+            if continuation_source is not None:
+                continuation_target = 1.0 - continuation_source
+                continuation_prob = torch.sigmoid(continuation_logit[:, 1:])
+                continuation_losses.append((continuation_prob - continuation_target) ** 2)
+
+                open_continuation = model.open_loop_predict_continuation(
+                    obs,
+                    action,
+                    context_len=context_len,
+                    horizon=horizon,
+                )
+                target_continuation = continuation_target[:, context_len : context_len + horizon]
+                open_loop_continuation_losses.append((open_continuation - target_continuation) ** 2)
 
     recon_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in recon_losses], dim=0)
     one_step_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in one_step_losses], dim=0)
+    open_stacked = torch.cat(open_loop_losses, dim=0)
     open_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in open_loop_losses], dim=0)
     metrics: dict[str, object] = {
         "posterior_reconstruction_mse": float(recon_all.mean().cpu()),
         "one_step_prior_mse": float(one_step_all.mean().cpu()),
         "open_loop_mse": float(open_all.mean().cpu()),
         "open_loop_mse_per_dim": {label: float(open_all[:, i].mean().cpu()) for i, label in enumerate(OBS_LABELS)},
-        "open_loop_mse_curve": [float(x) for x in (curve_sum / max(curve_count, 1)).detach().cpu()],
+    }
+    curves = {
+        "open_loop_mse_curve": tensor_to_float_list(open_stacked.mean(dim=(0, 2))),
     }
     if reward_losses:
         reward_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in reward_losses], dim=0)
+        open_reward_stacked = torch.cat(open_loop_reward_losses, dim=0)
         open_reward_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in open_loop_reward_losses], dim=0)
         metrics.update(
             {
                 "posterior_reward_mse": float(reward_all.mean().cpu()),
                 "open_loop_reward_mse": float(open_reward_all.mean().cpu()),
-                "open_loop_reward_mse_curve": [
-                    float(x) for x in (reward_curve_sum / max(reward_curve_count, 1)).detach().cpu()
-                ],
             }
         )
-    return metrics
+        curves["open_loop_reward_mse_curve"] = tensor_to_float_list(open_reward_stacked.mean(dim=(0, 2)))
+    if continuation_losses:
+        continuation_all = torch.cat([x.reshape(-1, x.shape[-1]) for x in continuation_losses], dim=0)
+        open_continuation_stacked = torch.cat(open_loop_continuation_losses, dim=0)
+        open_continuation_all = torch.cat(
+            [x.reshape(-1, x.shape[-1]) for x in open_loop_continuation_losses],
+            dim=0,
+        )
+        metrics.update(
+            {
+                "posterior_continuation_mse": float(continuation_all.mean().cpu()),
+                "open_loop_continuation_mse": float(open_continuation_all.mean().cpu()),
+            }
+        )
+        curves["open_loop_continuation_mse_curve"] = tensor_to_float_list(open_continuation_stacked.mean(dim=(0, 2)))
+    return metrics, curves
+
+
+def tensor_to_float_list(values: torch.Tensor) -> list[float]:
+    return [float(x) for x in values.detach().cpu()]
+
+
+def pretty_curve_label(label: str) -> str:
+    return label.removeprefix("open_loop_").removesuffix("_curve").replace("_", " ")
 
 
 def plot_curve(values: list[float], out_path: Path, ylabel: str = "MSE") -> None:
+    plot_curves({ylabel: values}, out_path, ylabel=ylabel)
+
+
+def plot_curves(curves: dict[str, list[float]], out_path: Path, ylabel: str = "MSE") -> None:
+    ensure_writable_matplotlib_cache()
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(np.arange(1, len(values) + 1), values)
-    ax.set_xlabel("prediction horizon")
+    for label, values in curves.items():
+        steps = range(1, len(values) + 1)
+        ax.plot(steps, values, label=pretty_curve_label(label))
+    ax.set_xlabel("prediction horizon step")
     ax.set_ylabel(ylabel)
-    ax.set_title(f"Open-loop RSSM {ylabel} vs horizon")
+    ax.set_title(f"Open-loop {ylabel} vs horizon")
+    if len(curves) > 1:
+        ax.legend()
     ax.grid(True)
     fig.tight_layout()
     fig.savefig(out_path)

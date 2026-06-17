@@ -18,7 +18,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ball_rssm.envs import BallBalanceEnv
-from ball_rssm.planning.rollout import OBS_LABELS, aggregate_metrics, episode_metrics, save_episode_npz, save_mpc_plots
+from ball_rssm.planning.rollout import aggregate_metrics, episode_metrics, save_episode_npz, save_mpc_plots
 from ball_rssm.planning.rssm_mpc import RSSMMPCController
 
 TaskMode = Literal["center", "viapoint", "random"]
@@ -28,10 +28,10 @@ TaskMode = Literal["center", "viapoint", "random"]
 class OnlineInitialBounds:
     """Symmetric sampling bounds for the 6D simulator state."""
 
-    x: float = 0.25
-    y: float = 0.25
-    vx: float = 0.10
-    vy: float = 0.10
+    x: float = 0.45
+    y: float = 0.45
+    vx: float = 0.20
+    vy: float = 0.20
     theta_x: float = 0.05
     theta_y: float = 0.05
 
@@ -90,32 +90,25 @@ def is_path_or_parent_writable(path: Path) -> bool:
     return path.parent.exists() and os.access(path.parent, os.W_OK)
 
 
-class SlidingWindowVisualizer:
-    def __init__(self, window: int, pause_s: float) -> None:
+class CombinedEpisodeVisualizer:
+    """Single-window online dashboard with one row per episode."""
+
+    def __init__(self, num_episodes: int, max_steps: int, board_size: float, pause_s: float) -> None:
         import matplotlib.pyplot as plt
 
         plt.ion()
-        self.window = window
-        self.pause_s = pause_s
         self._plt = plt
-
-        self.action_fig, self.action_ax = plt.subplots(figsize=(8, 3), num="RSSM MPC control input")
-        (self.theta_x_cmd_line,) = self.action_ax.plot([], [], label="theta_x_cmd")
-        (self.theta_y_cmd_line,) = self.action_ax.plot([], [], label="theta_y_cmd")
-        self.action_ax.set_xlabel("step")
-        self.action_ax.set_ylabel("rad")
-        self.action_ax.grid(True)
-        self.action_ax.legend(loc="upper right")
-
-        self.state_fig, self.state_axes = plt.subplots(3, 2, figsize=(10, 7), num="RSSM MPC states", sharex=True)
-        self.state_lines = []
-        for idx, label in enumerate(OBS_LABELS):
-            ax = self.state_axes.flat[idx]
-            (line,) = ax.plot([], [], label=label)
-            ax.set_title(label)
-            ax.grid(True)
-            self.state_lines.append(line)
-        self.state_axes.flat[-1].set_xlabel("step")
+        self.max_steps = max_steps
+        self.fig, axes = plt.subplots(
+            num_episodes,
+            3,
+            figsize=(15, max(3.5, 3.0 * num_episodes)),
+            squeeze=False,
+            num="RSSM MPC online episodes",
+        )
+        self.pause_s = pause_s
+        self.rows = setup_combined_animation_axes(axes, num_episodes, max_steps, board_size)
+        self.fig.tight_layout()
 
     def update(
         self,
@@ -128,59 +121,189 @@ class SlidingWindowVisualizer:
     ) -> None:
         obs = np.asarray(observations, dtype=np.float32)
         action = np.asarray(actions, dtype=np.float32)
-        obs_start = max(0, obs.shape[0] - self.window)
-        obs_steps = np.arange(obs_start, obs.shape[0])
-
-        for idx, line in enumerate(self.state_lines):
-            line.set_data(obs_steps, obs[obs_start:, idx])
-            ax = self.state_axes.flat[idx]
-            ax.set_xlim(obs_steps[0] if obs_steps.size else 0, max(obs_steps[-1] if obs_steps.size else 1, 1))
-            values = obs[obs_start:, idx]
-            self._set_padded_ylim(ax, values)
-
-        action_start = max(0, action.shape[0] - self.window)
-        action_steps = np.arange(action_start, action.shape[0])
-        if action.size:
-            self.theta_x_cmd_line.set_data(action_steps, action[action_start:, 0])
-            self.theta_y_cmd_line.set_data(action_steps, action[action_start:, 1])
-            self.action_ax.set_xlim(action_steps[0], max(action_steps[-1], 1))
-            self._set_padded_ylim(self.action_ax, action[action_start:].reshape(-1))
-        else:
-            self.theta_x_cmd_line.set_data([], [])
-            self.theta_y_cmd_line.set_data([], [])
-            self.action_ax.set_xlim(0, 1)
-            self.action_ax.set_ylim(-0.1, 0.1)
-
         cost_text = "" if best_cost is None else f" cost={best_cost:.3f}"
-        self.action_ax.set_title(
-            f"episode={episode_idx} task={task_name} target=({target_xy[0]:+.3f}, {target_xy[1]:+.3f}){cost_text}"
+        status = f"episode={episode_idx} task={task_name} step={obs.shape[0] - 1}{cost_text}"
+        update_combined_animation_row(
+            self.rows[episode_idx],
+            obs=obs,
+            action=action,
+            target_xy=target_xy,
+            frame=obs.shape[0] - 1,
+            status=status,
         )
-        self.action_fig.canvas.draw_idle()
-        self.state_fig.canvas.draw_idle()
+        self.fig.canvas.draw_idle()
         self._plt.pause(self.pause_s)
 
-    @staticmethod
-    def _set_padded_ylim(ax, values: np.ndarray) -> None:
-        if values.size == 0 or not np.isfinite(values).all():
-            ax.set_ylim(-1.0, 1.0)
-            return
-        low = float(values.min())
-        high = float(values.max())
-        if abs(high - low) < 1e-6:
-            pad = max(0.05, abs(high) * 0.1)
-        else:
-            pad = 0.1 * (high - low)
-        ax.set_ylim(low - pad, high + pad)
-
     def close(self) -> None:
-        self._plt.close(self.action_fig)
-        self._plt.close(self.state_fig)
+        self._plt.close(self.fig)
+
+
+def setup_combined_animation_axes(axes, num_episodes: int, max_steps: int, board_size: float) -> list[dict[str, object]]:
+    from matplotlib.patches import Rectangle
+
+    rows: list[dict[str, object]] = []
+    half = board_size / 2.0
+    board_limit = half * 1.15
+    distance_limit = board_size * np.sqrt(2.0)
+    for episode_idx in range(num_episodes):
+        board_ax, distance_ax, action_ax = axes[episode_idx]
+
+        board_ax.add_patch(Rectangle((-half, -half), board_size, board_size, fill=False, linewidth=2, edgecolor="black"))
+        board_ax.axhline(0.0, color="0.85", linewidth=1)
+        board_ax.axvline(0.0, color="0.85", linewidth=1)
+        (trajectory_line,) = board_ax.plot([], [], color="black", linewidth=1.6, alpha=0.85)
+        (ball_line,) = board_ax.plot([], [], "o", color="tab:red", markersize=8)
+        (target_line,) = board_ax.plot([], [], "x", color="tab:green", markersize=9, markeredgewidth=2)
+        status_text = board_ax.text(0.02, 0.98, "", transform=board_ax.transAxes, va="top", fontsize=8)
+        board_ax.set_xlim(-board_limit, board_limit)
+        board_ax.set_ylim(-board_limit, board_limit)
+        board_ax.set_aspect("equal", adjustable="box")
+        board_ax.set_title(f"episode {episode_idx}")
+        board_ax.set_xlabel("x [m]")
+        board_ax.set_ylabel("y [m]")
+        board_ax.grid(True, color="0.9", linewidth=0.8)
+
+        (distance_line,) = distance_ax.plot([], [], color="tab:blue", linewidth=1.6)
+        distance_ax.set_xlim(0, max_steps)
+        distance_ax.set_ylim(0.0, max(0.1, distance_limit))
+        distance_ax.set_title("distance")
+        distance_ax.set_xlabel("step")
+        distance_ax.set_ylabel("m")
+        distance_ax.grid(True, color="0.9", linewidth=0.8)
+
+        (theta_x_line,) = action_ax.plot([], [], color="tab:orange", linewidth=1.4, label="theta_x")
+        (theta_y_line,) = action_ax.plot([], [], color="tab:purple", linewidth=1.4, label="theta_y")
+        action_ax.set_xlim(0, max_steps)
+        action_ax.set_ylim(-0.3, 0.3)
+        action_ax.set_title("action")
+        action_ax.set_xlabel("step")
+        action_ax.set_ylabel("rad")
+        action_ax.grid(True, color="0.9", linewidth=0.8)
+        action_ax.legend(loc="upper right", fontsize=8)
+
+        rows.append(
+            {
+                "trajectory_line": trajectory_line,
+                "ball_line": ball_line,
+                "target_line": target_line,
+                "status_text": status_text,
+                "distance_line": distance_line,
+                "theta_x_line": theta_x_line,
+                "theta_y_line": theta_y_line,
+            }
+        )
+    return rows
+
+
+def update_combined_animation_row(
+    row: dict[str, object],
+    obs: np.ndarray,
+    action: np.ndarray,
+    target_xy: tuple[float, float],
+    frame: int,
+    status: str,
+) -> tuple[object, ...]:
+    frame = min(max(frame, 0), max(obs.shape[0] - 1, 0))
+    obs_until = obs[: frame + 1]
+    action_until = action[: min(frame, action.shape[0])]
+    target = np.asarray(target_xy, dtype=np.float32)
+    distance = np.linalg.norm(obs_until[:, :2] - target, axis=-1)
+    steps = np.arange(obs_until.shape[0])
+    action_steps = np.arange(action_until.shape[0])
+
+    row["trajectory_line"].set_data(obs_until[:, 0], obs_until[:, 1])
+    row["ball_line"].set_data([obs_until[-1, 0]], [obs_until[-1, 1]])
+    row["target_line"].set_data([target_xy[0]], [target_xy[1]])
+    row["status_text"].set_text(status)
+    row["distance_line"].set_data(steps, distance)
+    if action_until.size:
+        row["theta_x_line"].set_data(action_steps, action_until[:, 0])
+        row["theta_y_line"].set_data(action_steps, action_until[:, 1])
+    else:
+        row["theta_x_line"].set_data([], [])
+        row["theta_y_line"].set_data([], [])
+
+    return (
+        row["trajectory_line"],
+        row["ball_line"],
+        row["target_line"],
+        row["status_text"],
+        row["distance_line"],
+        row["theta_x_line"],
+        row["theta_y_line"],
+    )
+
+
+def save_combined_episode_gif(
+    episodes: list[dict[str, np.ndarray | float | bool]],
+    episode_records: list[dict[str, float | bool | str]],
+    out_path: Path,
+    fps: float,
+    max_steps: int,
+    board_size: float,
+) -> None:
+    if not episodes:
+        return
+    if fps <= 0.0:
+        raise ValueError("fps must be positive")
+
+    ensure_writable_matplotlib_cache()
+    if "matplotlib.pyplot" not in sys.modules:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+
+    fig, axes = plt.subplots(
+        len(episodes),
+        3,
+        figsize=(15, max(3.5, 3.0 * len(episodes))),
+        squeeze=False,
+    )
+    rows = setup_combined_animation_axes(axes, len(episodes), max_steps, board_size)
+    fig.suptitle("RSSM MPC online rollout replay", fontsize=14)
+    fig.tight_layout()
+
+    max_frames = max(np.asarray(episode["obs"]).shape[0] for episode in episodes)
+
+    def update(frame: int) -> tuple[object, ...]:
+        artists: list[object] = []
+        for episode_idx, episode in enumerate(episodes):
+            obs = np.asarray(episode["obs"], dtype=np.float32)
+            action = np.asarray(episode["action"], dtype=np.float32)
+            record = episode_records[episode_idx]
+            target_xy = (float(record["target_x"]), float(record["target_y"]))
+            task = str(record["task"])
+            success = bool(record["success"])
+            fell = bool(record["fell"])
+            display_frame = min(frame, obs.shape[0] - 1)
+            status = f"episode={episode_idx} task={task} step={display_frame} success={success} fell={fell}"
+            artists.extend(
+                update_combined_animation_row(
+                    rows[episode_idx],
+                    obs=obs,
+                    action=action,
+                    target_xy=target_xy,
+                    frame=display_frame,
+                    status=status,
+                )
+            )
+        return tuple(artists)
+
+    anim = FuncAnimation(fig, update, frames=max_frames, interval=1000.0 / fps, blit=True)
+    anim.save(out_path, writer=PillowWriter(fps=max(1, int(round(fps)))))
+    plt.close(fig)
 
 
 def run_online_episode(
     controller: RSSMMPCController,
     env: BallBalanceEnv,
-    visualizer: SlidingWindowVisualizer,
+    visualizer: CombinedEpisodeVisualizer | None,
     initial_state: np.ndarray,
     max_steps: int,
     target_xy: tuple[float, float],
@@ -201,8 +324,8 @@ def run_online_episode(
     terminated = False
     truncated = False
 
-    env.render()
-    visualizer.update(episode_idx, task_name, target_xy, observations, actions, best_cost=None)
+    if visualizer is not None:
+        visualizer.update(episode_idx, task_name, target_xy, observations, actions, best_cost=None)
 
     for _ in range(max_steps):
         start = time.perf_counter()
@@ -226,8 +349,8 @@ def run_online_episode(
         actions.append(action.astype(np.float32).copy())
         rewards.append(float(reward))
 
-        env.render()
-        visualizer.update(episode_idx, task_name, target_xy, observations, actions, best_cost=best_cost)
+        if visualizer is not None:
+            visualizer.update(episode_idx, task_name, target_xy, observations, actions, best_cost=best_cost)
         if terminated or truncated:
             break
 
@@ -285,8 +408,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--target-bound", type=positive_float, default=0.18)
-    parser.add_argument("--pos-bound", type=positive_float, default=0.25)
-    parser.add_argument("--vel-bound", type=positive_float, default=0.10)
+    parser.add_argument("--pos-bound", type=positive_float, default=0.45)
+    parser.add_argument("--vel-bound", type=positive_float, default=0.25)
     parser.add_argument("--angle-bound", type=positive_float, default=0.05)
     parser.add_argument("--x-bound", type=positive_float, default=None)
     parser.add_argument("--y-bound", type=positive_float, default=None)
@@ -294,8 +417,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vy-bound", type=positive_float, default=None)
     parser.add_argument("--theta-x-bound", type=positive_float, default=None)
     parser.add_argument("--theta-y-bound", type=positive_float, default=None)
-    parser.add_argument("--plot-window", type=int, default=150)
+    parser.add_argument("--plot-window", type=int, default=150, help="Deprecated; accepted for compatibility.")
     parser.add_argument("--plot-pause", type=float, default=0.001)
+    parser.add_argument(
+        "--show-online",
+        choices=["show", "not-show"],
+        default="show",
+        help="Show the single combined online dashboard while running, or use not-show for headless execution.",
+    )
+    parser.add_argument(
+        "--gif-path",
+        default=None,
+        help="Path for the combined multi-episode GIF. Defaults to OUT_DIR/online_mpc_all_episodes.gif.",
+    )
+    parser.add_argument(
+        "--gif-fps",
+        type=float,
+        default=None,
+        help="FPS for the saved GIF. Defaults to --render-fps.",
+    )
     parser.add_argument(
         "--render-fps",
         type=float,
@@ -315,6 +455,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--plot-window must be positive")
     if args.render_fps <= 0.0:
         parser.error("--render-fps must be positive")
+    if args.gif_fps is not None and args.gif_fps <= 0.0:
+        parser.error("--gif-fps must be positive")
     return args
 
 
@@ -334,14 +476,27 @@ def main() -> None:
     ensure_writable_matplotlib_cache()
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.checkpoint).resolve().parents[1] / "online_mpc_visualization"
     out_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = Path(args.gif_path) if args.gif_path else out_dir / "online_mpc_all_episodes.gif"
+    gif_fps = float(args.gif_fps if args.gif_fps is not None else args.render_fps)
+    show_online = args.show_online == "show"
 
     rng = np.random.default_rng(args.seed)
     bounds = bounds_from_args(args)
     metrics: list[dict[str, float | bool]] = []
     episode_records: list[dict[str, float | bool | str]] = []
+    episodes: list[dict[str, np.ndarray | float | bool]] = []
 
-    env = BallBalanceEnv(render_mode="human", config={"max_episode_steps": args.max_steps}, render_fps=args.render_fps)
-    visualizer = SlidingWindowVisualizer(window=args.plot_window, pause_s=args.plot_pause)
+    env = BallBalanceEnv(render_mode=None, config={"max_episode_steps": args.max_steps}, render_fps=args.render_fps)
+    visualizer = (
+        CombinedEpisodeVisualizer(
+            num_episodes=args.num_episodes,
+            max_steps=args.max_steps,
+            board_size=env.config.board_size,
+            pause_s=args.plot_pause,
+        )
+        if show_online
+        else None
+    )
     try:
         controller = RSSMMPCController(
             checkpoint_path=args.checkpoint,
@@ -376,6 +531,7 @@ def main() -> None:
                 episode_idx=episode_idx,
                 task_name=task_name,
             )
+            episodes.append(episode)
 
             if args.save_episodes:
                 save_episode_npz(episode, out_dir / f"episode_{episode_idx:03d}.npz")
@@ -407,13 +563,23 @@ def main() -> None:
         summary = {
             "episodes": episode_records,
             "aggregate": aggregate_metrics(metrics),
-            "config": vars(args) | {"initial_bounds": bounds.__dict__},
+            "config": vars(args) | {"initial_bounds": bounds.__dict__, "gif_path": str(gif_path)},
         }
         (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        save_combined_episode_gif(
+            episodes=episodes,
+            episode_records=episode_records,
+            out_path=gif_path,
+            fps=gif_fps,
+            max_steps=args.max_steps,
+            board_size=env.config.board_size,
+        )
         print(json.dumps(summary["aggregate"], indent=2))
         print(f"Saved metrics to {out_dir / 'metrics.json'}")
+        print(f"Saved combined episode GIF to {gif_path}")
     finally:
-        visualizer.close()
+        if visualizer is not None:
+            visualizer.close()
         env.close()
 
 

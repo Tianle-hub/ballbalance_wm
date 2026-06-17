@@ -275,11 +275,11 @@ sliding-window state plot, automatic episode switching, random initial states, a
 
 ```bash
 python scripts/online_mpc_visualizer.py \
-  --checkpoint runs/rssm_ball_v3_long_wiz_reward_continual_model/checkpoints/best.pt \
+  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
   --task viapoint \
   --num-episodes 5 \
   --max-steps 150 \
-  --pos-bound 0.25 \
+  --pos-bound 0.45 \
   --vel-bound 0.10 \
   --angle-bound 0.05 \
   --target-bound 0.18 \

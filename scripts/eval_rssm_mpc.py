@@ -42,6 +42,11 @@ def main() -> None:
     target = (0.0, 0.0) if args.mode == "center" else (args.target_x, args.target_y)
     final_threshold = 0.05 if args.mode == "center" else 0.06
     last_threshold = 0.07 if args.mode == "center" else 0.08
+    print(
+        "success requirement: "
+        f"target={target}, no fall, final_distance < {final_threshold:.3f}, "
+        f"last50_mean_distance < {last_threshold:.3f}"
+    )
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.checkpoint).resolve().parents[1] / f"eval_mpc_{args.mode}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,14 +74,20 @@ def main() -> None:
         for episode_idx in range(args.num_episodes):
             initial_state = sample_initial_state(rng, InitialConditionBounds())
             episode = run_mpc_episode(controller, env, initial_state, args.max_steps, target_xy=target)
-            metrics.append(episode_metrics(episode, target, final_threshold=final_threshold, last_window_threshold=last_threshold))
-            print(f"episode={episode_idx:03d} final_distance={metrics[-1]['final_distance']:.4f} fell={metrics[-1]['fell']}")
+            metric = episode_metrics(episode, target, final_threshold=final_threshold, last_window_threshold=last_threshold)
+            metrics.append(metric)
+            print(
+                f"episode={episode_idx:03d} success={metric['success']} fell={metric['fell']} "
+                f"final_distance={metric['final_distance']:.4f} last50_distance={metric['last50_distance']:.4f}"
+            )
     finally:
         env.close()
 
     summary = {"episodes": metrics, "aggregate": aggregate_metrics(metrics), "config": vars(args)}
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary["aggregate"], indent=2))
+    success_count = sum(bool(metric["success"]) for metric in metrics)
+    print(f"successes={success_count}/{len(metrics)} success_rate={summary['aggregate'].get('success_rate', 0.0):.3f}")
 
 
 if __name__ == "__main__":
