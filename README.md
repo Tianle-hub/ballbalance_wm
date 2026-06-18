@@ -41,7 +41,19 @@ All the hyperparameters are listed in main.py and are avaialble as command line 
 #### For training
 `python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train`
 #### For Evaluation
-`python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'eval' --evaluate --restore --checkpoint_path '<your_ckpt_path>'`
+`python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'eval' --evaluate --restore --checkpoint-path '<your_ckpt_path>'`
+
+#### Ball balance environment
+The local analytical ball-board environment is also available to this pixel Dreamer runner through `--env ball-balance`.
+It renders the 6D ball state to a 64x64 RGB observation for the existing convolutional world model.
+
+```bash
+python dreamer.py --env ball-balance --algo Dreamerv2 --exp ball_default --train --time-limit 300
+```
+
+```bash
+python dreamer.py --env ball-balance --algo Dreamerv2 --exp ball_eval --evaluate --restore --checkpoint-path '<your_ckpt_path>'
+```
 ### Google_Colab
  I have added a colab file [![Open Dreamer in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/17C4w5-LVK_xiLjcLMrFNY_PwncHW-QfL?usp=sharing)  to train and evaluate on freely avilable GPUs on google colab for quick reproducilibilty.
 

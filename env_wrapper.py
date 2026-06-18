@@ -8,6 +8,8 @@ import torch
 import numpy as np
 from PIL import Image
 
+from ball_rssm.envs import BallBalanceConfig, BallBalanceEnv
+
 
 def _configure_dm_control_rendering():
     pyopengl_platform = os.environ.get('PYOPENGL_PLATFORM')
@@ -73,6 +75,92 @@ class DeepMindControl:
         if kwargs.get('mode', 'rgb_array') != 'rgb_array':
           raise ValueError("Only render mode 'rgb_array' is supported.")
         return self._env.physics.render(*self._size, camera_id=self._camera)
+
+
+class BallBalanceDreamer:
+    """Old-style pixel wrapper for BallBalanceEnv used by dreamer.py."""
+
+    def __init__(self, seed, size=(64, 64), max_episode_steps=300):
+        self._size = tuple(size)
+        self._env = BallBalanceEnv(
+            render_mode=None,
+            config=BallBalanceConfig(max_episode_steps=int(max_episode_steps)),
+        )
+        self._seed = seed
+        self._reset_count = 0
+        self._last_obs = None
+
+    @property
+    def observation_space(self):
+        spaces = {
+            'state': gym.spaces.Box(-np.inf, np.inf, (6,), dtype=np.float32),
+            'image': gym.spaces.Box(0, 255, (3,) + self._size, dtype=np.uint8),
+        }
+        return gym.spaces.Dict(spaces)
+
+    @property
+    def action_space(self):
+        return self._env.action_space
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self._env.step(action)
+        done = bool(terminated or truncated)
+        self._last_obs = obs
+        wrapped = {
+            'state': obs.astype(np.float32, copy=True),
+            'image': self.render().transpose(2, 0, 1).copy(),
+        }
+        info = dict(info)
+        info['discount'] = np.array(0.0 if terminated else 1.0, np.float32)
+        info['terminated'] = bool(terminated)
+        info['truncated'] = bool(truncated)
+        return wrapped, float(reward), done, info
+
+    def reset(self):
+        obs, _ = self._env.reset(seed=self._seed + self._reset_count)
+        self._reset_count += 1
+        self._last_obs = obs
+        return {
+            'state': obs.astype(np.float32, copy=True),
+            'image': self.render().transpose(2, 0, 1).copy(),
+        }
+
+    def render(self, *args, **kwargs):
+        if kwargs.get('mode', 'rgb_array') != 'rgb_array':
+            raise ValueError("Only render mode 'rgb_array' is supported.")
+        obs = self._last_obs
+        if obs is None:
+            obs = self._env._get_obs()
+        return render_ball_balance_state(obs, self._env.config.board_size, self._size)
+
+
+def render_ball_balance_state(obs, board_size, size):
+    width, height = int(size[1]), int(size[0])
+    image = np.full((height, width, 3), 255, dtype=np.uint8)
+    margin = max(2, int(0.08 * min(width, height)))
+    left, top = margin, margin
+    right, bottom = width - margin - 1, height - margin - 1
+
+    image[top:bottom + 1, left] = 0
+    image[top:bottom + 1, right] = 0
+    image[top, left:right + 1] = 0
+    image[bottom, left:right + 1] = 0
+
+    cx = (left + right) // 2
+    cy = (top + bottom) // 2
+    image[cy, left:right + 1] = 220
+    image[top:bottom + 1, cx] = 220
+
+    half = board_size / 2.0
+    x = float(np.clip(obs[0], -half, half))
+    y = float(np.clip(obs[1], -half, half))
+    px = int(round(left + (x + half) / board_size * (right - left)))
+    py = int(round(bottom - (y + half) / board_size * (bottom - top)))
+    radius = max(2, int(0.055 * min(width, height)))
+    yy, xx = np.ogrid[:height, :width]
+    mask = (xx - px) ** 2 + (yy - py) ** 2 <= radius ** 2
+    image[mask] = np.array([220, 30, 30], dtype=np.uint8)
+    return image
 
 
 class TimeLimit:

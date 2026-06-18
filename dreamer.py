@@ -2,6 +2,7 @@ import os
 import random
 import time
 import argparse
+import tempfile
 import numpy as np
 
 import torch
@@ -15,13 +16,28 @@ from collections import OrderedDict
 import env_wrapper
 from replay_buffer import ReplayBuffer
 from models import RSSM, ConvEncoder, ConvDecoder, DenseDecoder, ActionDecoder
+
+if "MPLCONFIGDIR" not in os.environ:
+    matplotlib_config = os.path.join(os.path.expanduser("~"), ".config", "matplotlib")
+    if not os.access(os.path.dirname(matplotlib_config), os.W_OK):
+        fallback_config = os.path.join(tempfile.gettempdir(), "ballbalance_matplotlib")
+        os.makedirs(fallback_config, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = fallback_config
+
 from utils import *
 
 os.environ['MUJOCO_GL'] = 'egl'
 
 def make_env(args):
 
-    env = env_wrapper.DeepMindControl(args.env, args.seed)
+    if args.env in {'ball-balance', 'ball_balance', 'ball'}:
+        env = env_wrapper.BallBalanceDreamer(
+            args.seed,
+            size=(64, 64),
+            max_episode_steps=args.time_limit,
+        )
+    else:
+        env = env_wrapper.DeepMindControl(args.env, args.seed)
     env = env_wrapper.ActionRepeat(env, args.action_repeat)
     env = env_wrapper.NormalizeActions(env)
     env = env_wrapper.TimeLimit(env, args.time_limit / args.action_repeat)
