@@ -48,7 +48,10 @@ The local analytical ball-board environment is also available to this pixel Drea
 It renders the 6D ball state to a 64x64 RGB observation for the existing convolutional world model.
 
 ```bash
-python dreamer.py --env ball-balance --algo Dreamerv2 --exp ball_default --train --time-limit 300
+.venv-dm-control/bin/python dreamer.py --env ball-balance --algo Dreamerv2 --exp ball_default --train --time-limit 300
+```
+```bash
+.venv-dm-control/bin/python dreamer.py --env ball-balance --algo Dreamerv1 --exp ball_default --train --time-limit 300
 ```
 
 ```bash
