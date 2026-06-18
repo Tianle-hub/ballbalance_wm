@@ -183,7 +183,7 @@ Checkpoints are written under `runs/dreamer_ball_v0/checkpoints/` and contain th
 
 ```bash
 python scripts/run_dreamer_policy.py \
-  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
+  --checkpoint runs/dreamer_ball_online_v2_coverage_init_center_bonus/checkpoints/best.pt \
   --num-episodes 20 \
   --max-steps 300 \
   --save-plots \
@@ -194,11 +194,11 @@ For a live closed-loop visualizer that runs the same policy evaluation path:
 
 ```bash
 python scripts/visualize_dreamer_policy.py \
-  --checkpoint runs/dreamer_ball_online_v2/checkpoints/best.pt \
-  --num-episodes 3 \
+  --checkpoint runs/dreamer_ball_online_v2_coverage_init_center_bonus/checkpoints/best.pt \
+  --num-episodes 5 \
   --max-steps 300 \
-  --play 
-  # --save-gif \
+  --save-gif 
+  # --play \
   # --save-plots \
   # --save-episodes
 ```

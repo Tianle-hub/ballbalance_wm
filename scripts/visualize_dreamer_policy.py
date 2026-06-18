@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,28 @@ from ball_rssm.utils.plotting import add_board_boundary
 from ball_rssm.utils.seed import set_seed
 
 
+def ensure_writable_matplotlib_cache() -> None:
+    if "MPLCONFIGDIR" not in os.environ:
+        config_dir = Path.home() / ".config" / "matplotlib"
+        if not is_path_or_parent_writable(config_dir):
+            fallback = Path(tempfile.gettempdir()) / "ballbalance_matplotlib"
+            fallback.mkdir(parents=True, exist_ok=True)
+            os.environ["MPLCONFIGDIR"] = str(fallback)
+
+    if "XDG_CACHE_HOME" not in os.environ:
+        cache_dir = Path.home() / ".cache"
+        if not is_path_or_parent_writable(cache_dir):
+            fallback_cache = Path(tempfile.gettempdir()) / "ballbalance_cache"
+            fallback_cache.mkdir(parents=True, exist_ok=True)
+            os.environ["XDG_CACHE_HOME"] = str(fallback_cache)
+
+
+def is_path_or_parent_writable(path: Path) -> bool:
+    if path.exists():
+        return os.access(path, os.W_OK)
+    return path.parent.exists() and os.access(path.parent, os.W_OK)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -38,14 +62,31 @@ def main() -> None:
     parser.add_argument("--vel-bound", type=float, default=0.20)
     parser.add_argument("--angle-bound", type=float, default=0.12)
     parser.add_argument("--stochastic", action="store_true", help="Sample from the actor instead of using its mode.")
-    parser.add_argument("--play", action="store_true", help="Show a live matplotlib visualizer during rollout.")
+    parser.add_argument("--play", action="store_true", help="Deprecated alias; use --show-online show.")
+    parser.add_argument(
+        "--show-online",
+        choices=["show", "not-show"],
+        default="show",
+        help="Show the single combined online dashboard while running, or use not-show for headless execution.",
+    )
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument("--save-gif", action="store_true", help="Save one animated GIF per visualized episode.")
+    parser.add_argument("--save-gif", action="store_true", help="Deprecated; one combined GIF is always saved.")
+    parser.add_argument(
+        "--gif-path",
+        default=None,
+        help="Path for the combined multi-episode GIF. Defaults to OUT_DIR/dreamer_policy_all_episodes.gif.",
+    )
+    parser.add_argument(
+        "--gif-fps",
+        type=float,
+        default=None,
+        help="FPS for the saved GIF. Defaults to --fps.",
+    )
     parser.add_argument(
         "--gif-episode-limit",
         type=int,
         default=None,
-        help="Maximum number of episode GIFs to save. Defaults to all episodes when --save-gif is set.",
+        help="Deprecated; accepted for compatibility.",
     )
     parser.add_argument("--save-episodes", action="store_true")
     parser.add_argument("--save-plots", action="store_true")
@@ -58,11 +99,17 @@ def main() -> None:
         raise ValueError("max_steps must be positive")
     if args.fps <= 0.0:
         raise ValueError("fps must be positive")
+    if args.gif_fps is not None and args.gif_fps <= 0.0:
+        raise ValueError("gif_fps must be positive")
 
+    ensure_writable_matplotlib_cache()
     set_seed(args.seed)
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.checkpoint).resolve().parents[1] / "policy_visualizer"
     out_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = Path(args.gif_path) if args.gif_path else out_dir / "dreamer_policy_all_episodes.gif"
+    gif_fps = float(args.gif_fps if args.gif_fps is not None else args.fps)
+    show_online = args.show_online == "show"
 
     env = BallBalanceEnv(config={"max_episode_steps": args.max_steps})
     bounds = InitialConditionBounds(pos=args.pos_bound, vel=args.vel_bound, angle=args.angle_bound)
@@ -73,10 +120,19 @@ def main() -> None:
         device=device,
         deterministic=not args.stochastic,
     )
-    visualizer = LivePolicyVisualizer(env.config.board_size, args.max_steps, args.fps) if args.play else None
+    visualizer = (
+        CombinedPolicyVisualizer(
+            num_episodes=args.num_episodes,
+            board_size=env.config.board_size,
+            max_steps=args.max_steps,
+            fps=args.fps,
+        )
+        if show_online
+        else None
+    )
     rng = np.random.default_rng(args.seed)
     metrics = []
-    gif_limit = args.num_episodes if args.gif_episode_limit is None else max(args.gif_episode_limit, 0)
+    episodes: list[dict[str, Any]] = []
 
     try:
         for episode_idx in range(args.num_episodes):
@@ -89,19 +145,13 @@ def main() -> None:
                 visualizer=visualizer,
                 episode_idx=episode_idx,
             )
+            episodes.append(episode)
             episode_metric = episode_metrics(episode)
             metrics.append(episode_metric)
             if args.save_episodes:
                 save_episode_npz(episode, out_dir / f"episode_{episode_idx:03d}.npz")
             if args.save_plots:
                 save_policy_plots(episode, out_dir / f"episode_{episode_idx:03d}")
-            if args.save_gif and episode_idx < gif_limit:
-                save_episode_animation(
-                    episode=episode,
-                    out_path=out_dir / f"episode_{episode_idx:03d}.gif",
-                    fps=args.fps,
-                    board_size=env.config.board_size,
-                )
             print(
                 f"episode={episode_idx:03d} return={episode_metric['return']:.3f} "
                 f"steps={episode_metric['steps']} final_distance={episode_metric['final_distance']:.4f} "
@@ -117,11 +167,20 @@ def main() -> None:
         "num_episodes": args.num_episodes,
         "max_steps": args.max_steps,
         "bounds": {"pos": args.pos_bound, "vel": args.vel_bound, "angle": args.angle_bound},
+        "gif_path": str(gif_path),
         "episodes": metrics,
         "aggregate": aggregate_metrics(metrics),
     }
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    save_combined_policy_gif(
+        episodes=episodes,
+        out_path=gif_path,
+        fps=gif_fps,
+        board_size=env.config.board_size,
+        max_steps=args.max_steps,
+    )
     print(json.dumps(summary["aggregate"], indent=2))
+    print(f"Saved combined Dreamer policy GIF to {gif_path}")
     print(f"wrote Dreamer policy visualization outputs to {out_dir}")
 
 
@@ -130,13 +189,11 @@ def run_visualized_policy_episode(
     env: BallBalanceEnv,
     initial_state: np.ndarray,
     max_steps: int,
-    visualizer: "LivePolicyVisualizer | None",
+    visualizer: "CombinedPolicyVisualizer | None",
     episode_idx: int,
 ) -> dict[str, Any]:
     obs, _ = env.reset(options={"state": initial_state.astype(np.float64)})
     agent.reset(initial_obs=obs)
-    if visualizer is not None:
-        visualizer.reset_episode(episode_idx, obs)
 
     observations = [obs.copy()]
     actions: list[np.ndarray] = []
@@ -145,6 +202,16 @@ def run_visualized_policy_episode(
     truncated_flags: list[bool] = []
     diagnostics: list[dict[str, Any]] = []
     total_return = 0.0
+    if visualizer is not None:
+        visualizer.update(
+            episode_idx=episode_idx,
+            step=0,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            total_return=total_return,
+            done=False,
+        )
 
     for step in range(max_steps):
         action = agent.act(observations[-1])
@@ -160,10 +227,11 @@ def run_visualized_policy_episode(
 
         if visualizer is not None:
             visualizer.update(
+                episode_idx=episode_idx,
                 step=step + 1,
-                obs=next_obs,
-                action=action,
-                reward=float(reward),
+                observations=observations,
+                actions=actions,
+                rewards=rewards,
                 total_return=total_return,
                 done=bool(terminated or truncated),
             )
@@ -184,177 +252,210 @@ def run_visualized_policy_episode(
     }
 
 
-class LivePolicyVisualizer:
-    """Small online matplotlib dashboard for a real closed-loop rollout."""
+class CombinedPolicyVisualizer:
+    """Single-window online dashboard with one row per Dreamer episode."""
 
-    def __init__(self, board_size: float, max_steps: int, fps: float) -> None:
+    def __init__(self, num_episodes: int, board_size: float, max_steps: int, fps: float) -> None:
         import matplotlib.pyplot as plt
 
         self.plt = plt
-        self.board_size = board_size
-        self.max_steps = max_steps
         self.pause = 1.0 / fps
-        self.obs_history: list[np.ndarray] = []
-        self.action_history: list[np.ndarray] = []
-        self.return_history: list[float] = []
-
         plt.ion()
-        self.fig = plt.figure(figsize=(11, 5.5))
-        grid = self.fig.add_gridspec(2, 2, width_ratios=(1.05, 1.0))
-        self.ax_board = self.fig.add_subplot(grid[:, 0])
-        self.ax_return = self.fig.add_subplot(grid[0, 1])
-        self.ax_action = self.fig.add_subplot(grid[1, 1])
-        self._setup_axes()
-
-        (self.trace_line,) = self.ax_board.plot([], [], color="tab:blue", linewidth=2, label="trajectory")
-        (self.ball_line,) = self.ax_board.plot([], [], "o", color="tab:red", markersize=10, label="ball")
-        (self.return_line,) = self.ax_return.plot([], [], color="tab:green", linewidth=2)
-        (self.action_x_line,) = self.ax_action.plot([], [], label="theta_x_cmd", color="tab:orange")
-        (self.action_y_line,) = self.ax_action.plot([], [], label="theta_y_cmd", color="tab:purple")
-        self.text = self.ax_board.text(0.02, 0.98, "", transform=self.ax_board.transAxes, va="top")
-        self.ax_board.legend(loc="lower right")
-        self.ax_action.legend(loc="upper right")
+        self.fig, axes = plt.subplots(
+            num_episodes,
+            3,
+            figsize=(15, max(3.5, 3.0 * num_episodes)),
+            squeeze=False,
+            num="Dreamer policy online episodes",
+        )
+        self.rows = setup_combined_policy_axes(axes, num_episodes, board_size, max_steps)
         self.fig.tight_layout()
-
-    def _setup_axes(self) -> None:
-        half = self.board_size / 2.0
-        add_board_boundary(self.ax_board, self.board_size)
-        self.ax_board.scatter([0.0], [0.0], marker="x", color="black", linewidths=1.5)
-        self.ax_board.set_xlim(-half * 1.15, half * 1.15)
-        self.ax_board.set_ylim(-half * 1.15, half * 1.15)
-        self.ax_board.set_xlabel("x [m]")
-        self.ax_board.set_ylabel("y [m]")
-        self.ax_board.grid(True, color="0.9")
-
-        self.ax_return.set_xlim(0, self.max_steps)
-        self.ax_return.set_ylim(-10, self.max_steps)
-        self.ax_return.set_xlabel("step")
-        self.ax_return.set_ylabel("cumulative return")
-        self.ax_return.grid(True, color="0.9")
-
-        self.ax_action.set_xlim(0, self.max_steps)
-        self.ax_action.set_ylim(-0.30, 0.30)
-        self.ax_action.set_xlabel("step")
-        self.ax_action.set_ylabel("action [rad]")
-        self.ax_action.grid(True, color="0.9")
-
-    def reset_episode(self, episode_idx: int, obs: np.ndarray) -> None:
-        self.obs_history = [obs.astype(np.float32, copy=True)]
-        self.action_history = []
-        self.return_history = [0.0]
-        self.trace_line.set_data([obs[0]], [obs[1]])
-        self.ball_line.set_data([obs[0]], [obs[1]])
-        self.return_line.set_data([0], [0.0])
-        self.action_x_line.set_data([], [])
-        self.action_y_line.set_data([], [])
-        self.text.set_text(f"episode={episode_idx:03d}  step=0")
-        self.fig.canvas.draw_idle()
-        self.plt.pause(self.pause)
 
     def update(
         self,
+        episode_idx: int,
         step: int,
-        obs: np.ndarray,
-        action: np.ndarray,
-        reward: float,
+        observations: list[np.ndarray],
+        actions: list[np.ndarray],
+        rewards: list[float],
         total_return: float,
         done: bool,
     ) -> None:
-        self.obs_history.append(obs.astype(np.float32, copy=True))
-        self.action_history.append(action.reshape(-1).astype(np.float32, copy=True))
-        self.return_history.append(total_return)
-
-        obs_arr = np.asarray(self.obs_history, dtype=np.float32)
-        action_arr = np.asarray(self.action_history, dtype=np.float32)
-        returns = np.asarray(self.return_history, dtype=np.float32)
-        action_steps = np.arange(action_arr.shape[0])
-
-        self.trace_line.set_data(obs_arr[:, 0], obs_arr[:, 1])
-        self.ball_line.set_data([obs_arr[-1, 0]], [obs_arr[-1, 1]])
-        self.return_line.set_data(np.arange(returns.shape[0]), returns)
-        if action_arr.size:
-            self.action_x_line.set_data(action_steps, action_arr[:, 0])
-            self.action_y_line.set_data(action_steps, action_arr[:, 1])
-
-        self.ax_return.set_ylim(min(-10.0, float(returns.min()) - 5.0), max(10.0, float(returns.max()) + 5.0))
-        distance = float(np.linalg.norm(obs_arr[-1, :2]))
+        obs = np.asarray(observations, dtype=np.float32)
+        action = np.asarray(actions, dtype=np.float32)
+        reward = np.asarray(rewards, dtype=np.float32)
         status = "done" if done else "running"
-        self.text.set_text(
-            f"step={step}  return={total_return:.2f}  reward={reward:.2f}\n"
-            f"distance={distance:.3f}  {status}"
+        update_combined_policy_row(
+            self.rows[episode_idx],
+            obs=obs,
+            action=action,
+            reward=reward,
+            frame=step,
+            status=f"episode={episode_idx:03d} step={step} return={total_return:.2f} {status}",
         )
         self.fig.canvas.draw_idle()
         self.plt.pause(self.pause)
 
     def close(self) -> None:
-        self.plt.ioff()
+        self.plt.close(self.fig)
 
 
-def save_episode_animation(episode: dict[str, Any], out_path: Path, fps: float, board_size: float) -> None:
-    """Save a replay animation of one closed-loop policy episode."""
+def setup_combined_policy_axes(axes, num_episodes: int, board_size: float, max_steps: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    half = board_size / 2.0
+    board_limit = half * 1.15
+    for episode_idx in range(num_episodes):
+        board_ax, return_ax, action_ax = axes[episode_idx]
 
+        add_board_boundary(board_ax, board_size)
+        board_ax.scatter([0.0], [0.0], marker="x", color="black", linewidths=1.5)
+        (trace_line,) = board_ax.plot([], [], color="tab:blue", linewidth=2, label="trajectory")
+        (ball_line,) = board_ax.plot([], [], "o", color="tab:red", markersize=8, label="ball")
+        status_text = board_ax.text(0.02, 0.98, "", transform=board_ax.transAxes, va="top", fontsize=8)
+        board_ax.set_xlim(-board_limit, board_limit)
+        board_ax.set_ylim(-board_limit, board_limit)
+        board_ax.set_aspect("equal", adjustable="box")
+        board_ax.set_title(f"episode {episode_idx}")
+        board_ax.set_xlabel("x [m]")
+        board_ax.set_ylabel("y [m]")
+        board_ax.grid(True, color="0.9")
+        board_ax.legend(loc="lower right", fontsize=8)
+
+        (return_line,) = return_ax.plot([], [], color="tab:green", linewidth=1.8)
+        return_ax.set_xlim(0, max_steps)
+        return_ax.set_ylim(-10.0, max(10.0, float(max_steps)))
+        return_ax.set_title("cumulative return")
+        return_ax.set_xlabel("step")
+        return_ax.set_ylabel("return")
+        return_ax.grid(True, color="0.9")
+
+        (action_x_line,) = action_ax.plot([], [], label="theta_x", color="tab:orange", linewidth=1.4)
+        (action_y_line,) = action_ax.plot([], [], label="theta_y", color="tab:purple", linewidth=1.4)
+        action_ax.set_xlim(0, max_steps)
+        action_ax.set_ylim(-0.30, 0.30)
+        action_ax.set_title("action")
+        action_ax.set_xlabel("step")
+        action_ax.set_ylabel("rad")
+        action_ax.grid(True, color="0.9")
+        action_ax.legend(loc="upper right", fontsize=8)
+
+        rows.append(
+            {
+                "trace_line": trace_line,
+                "ball_line": ball_line,
+                "status_text": status_text,
+                "return_line": return_line,
+                "return_ax": return_ax,
+                "action_x_line": action_x_line,
+                "action_y_line": action_y_line,
+            }
+        )
+    return rows
+
+
+def update_combined_policy_row(
+    row: dict[str, object],
+    obs: np.ndarray,
+    action: np.ndarray,
+    reward: np.ndarray,
+    frame: int,
+    status: str,
+) -> tuple[object, ...]:
+    frame = min(max(frame, 0), max(obs.shape[0] - 1, 0))
+    obs_until = obs[: frame + 1]
+    action_until = action[: min(frame, action.shape[0])]
+    returns = np.concatenate([[0.0], np.cumsum(reward.reshape(-1), dtype=np.float32)])
+    returns_until = returns[: frame + 1]
+    steps = np.arange(obs_until.shape[0])
+    action_steps = np.arange(action_until.shape[0])
+
+    row["trace_line"].set_data(obs_until[:, 0], obs_until[:, 1])
+    row["ball_line"].set_data([obs_until[-1, 0]], [obs_until[-1, 1]])
+    row["status_text"].set_text(status)
+    row["return_line"].set_data(steps, returns_until)
+    if returns_until.size:
+        return_ax = row["return_ax"]
+        low = min(-10.0, float(returns_until.min()) - 5.0)
+        high = max(10.0, float(returns_until.max()) + 5.0)
+        return_ax.set_ylim(low, high)
+
+    if action_until.size:
+        row["action_x_line"].set_data(action_steps, action_until[:, 0])
+        row["action_y_line"].set_data(action_steps, action_until[:, 1])
+    else:
+        row["action_x_line"].set_data([], [])
+        row["action_y_line"].set_data([], [])
+
+    return (
+        row["trace_line"],
+        row["ball_line"],
+        row["status_text"],
+        row["return_line"],
+        row["action_x_line"],
+        row["action_y_line"],
+    )
+
+
+def save_combined_policy_gif(
+    episodes: list[dict[str, Any]],
+    out_path: Path,
+    fps: float,
+    board_size: float,
+    max_steps: int,
+) -> None:
+    if not episodes:
+        return
+    if fps <= 0.0:
+        raise ValueError("fps must be positive")
+
+    ensure_writable_matplotlib_cache()
+    if "matplotlib.pyplot" not in sys.modules:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
 
-    obs = episode["obs"]
-    action = episode["action"]
-    reward = episode["reward"].reshape(-1)
-    returns = np.concatenate([[0.0], np.cumsum(reward)])
-    half = board_size / 2.0
-
-    fig = plt.figure(figsize=(11, 5.5))
-    grid = fig.add_gridspec(2, 2, width_ratios=(1.05, 1.0))
-    ax_board = fig.add_subplot(grid[:, 0])
-    ax_return = fig.add_subplot(grid[0, 1])
-    ax_action = fig.add_subplot(grid[1, 1])
-
-    add_board_boundary(ax_board, board_size)
-    ax_board.scatter([0.0], [0.0], marker="x", color="black", linewidths=1.5)
-    ax_board.set_xlim(-half * 1.15, half * 1.15)
-    ax_board.set_ylim(-half * 1.15, half * 1.15)
-    ax_board.set_xlabel("x [m]")
-    ax_board.set_ylabel("y [m]")
-    ax_board.grid(True, color="0.9")
-
-    ax_return.set_xlim(0, max(obs.shape[0] - 1, 1))
-    ax_return.set_ylim(min(-10.0, float(returns.min()) - 5.0), max(10.0, float(returns.max()) + 5.0))
-    ax_return.set_xlabel("step")
-    ax_return.set_ylabel("cumulative return")
-    ax_return.grid(True, color="0.9")
-
-    ax_action.set_xlim(0, max(action.shape[0], 1))
-    ax_action.set_ylim(-0.30, 0.30)
-    ax_action.set_xlabel("step")
-    ax_action.set_ylabel("action [rad]")
-    ax_action.grid(True, color="0.9")
-
-    (trace_line,) = ax_board.plot([], [], color="tab:blue", linewidth=2, label="trajectory")
-    (ball_line,) = ax_board.plot([], [], "o", color="tab:red", markersize=10, label="ball")
-    (return_line,) = ax_return.plot([], [], color="tab:green", linewidth=2)
-    (action_x_line,) = ax_action.plot([], [], label="theta_x_cmd", color="tab:orange")
-    (action_y_line,) = ax_action.plot([], [], label="theta_y_cmd", color="tab:purple")
-    text = ax_board.text(0.02, 0.98, "", transform=ax_board.transAxes, va="top")
-    ax_board.legend(loc="lower right")
-    ax_action.legend(loc="upper right")
-    fig.tight_layout()
-
-    def update(frame: int):
-        trace_line.set_data(obs[: frame + 1, 0], obs[: frame + 1, 1])
-        ball_line.set_data([obs[frame, 0]], [obs[frame, 1]])
-        return_line.set_data(np.arange(frame + 1), returns[: frame + 1])
-        if frame > 0 and action.size:
-            action_steps = np.arange(frame)
-            action_x_line.set_data(action_steps, action[:frame, 0])
-            action_y_line.set_data(action_steps, action[:frame, 1])
-        distance = np.linalg.norm(obs[frame, :2])
-        text.set_text(f"step={frame}  return={returns[frame]:.2f}  distance={distance:.3f}")
-        return trace_line, ball_line, return_line, action_x_line, action_y_line, text
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    anim = FuncAnimation(fig, update, frames=obs.shape[0], interval=1000.0 / fps, blit=True)
-    anim.save(out_path, writer=PillowWriter(fps=int(round(fps))))
+    if out_path.exists():
+        out_path.unlink()
+
+    fig, axes = plt.subplots(
+        len(episodes),
+        3,
+        figsize=(15, max(3.5, 3.0 * len(episodes))),
+        squeeze=False,
+    )
+    rows = setup_combined_policy_axes(axes, len(episodes), board_size, max_steps)
+    fig.suptitle("Dreamer policy rollout replay", fontsize=14)
+    fig.tight_layout()
+    max_frames = max(np.asarray(episode["obs"]).shape[0] for episode in episodes)
+
+    def update(frame: int) -> tuple[object, ...]:
+        artists: list[object] = []
+        for episode_idx, episode in enumerate(episodes):
+            obs = np.asarray(episode["obs"], dtype=np.float32)
+            action = np.asarray(episode["action"], dtype=np.float32)
+            reward = np.asarray(episode["reward"], dtype=np.float32).reshape(-1)
+            display_frame = min(frame, obs.shape[0] - 1)
+            terminated = bool(episode["terminated"].any()) if episode["terminated"].size else False
+            truncated = bool(episode["truncated"].any()) if episode["truncated"].size else False
+            status = f"episode={episode_idx:03d} step={display_frame} terminated={terminated} truncated={truncated}"
+            artists.extend(
+                update_combined_policy_row(
+                    rows[episode_idx],
+                    obs=obs,
+                    action=action,
+                    reward=reward,
+                    frame=display_frame,
+                    status=status,
+                )
+            )
+        return tuple(artists)
+
+    anim = FuncAnimation(fig, update, frames=max_frames, interval=1000.0 / fps, blit=True)
+    anim.save(out_path, writer=PillowWriter(fps=max(1, int(round(fps)))))
     plt.close(fig)
-    print(f"Saved policy animation to {out_path}")
 
 
 if __name__ == "__main__":
