@@ -21,8 +21,8 @@ class BallBalanceConfig:
     max_episode_steps: int = 300
     damping: float = 0.05
     angle_tau: float = 0.08
-    init_pos_range: float = 0.20
-    init_vel_range: float = 0.05
+    init_pos_range: float = 0.45
+    init_vel_range: float = 0.2
     reward_pos_weight: float = 1.0
     # TODO: test following weight
     reward_vel_weight: float = 0.10

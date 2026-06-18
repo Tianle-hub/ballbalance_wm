@@ -458,7 +458,7 @@ def main():
     # saving and checkpoint parameters
     parser.add_argument('--scalar-freq', type=int, default=1e3, help='scalar logging freq')
     parser.add_argument('--log-video-freq', type=int, default=-1, help='video logging frequency')
-    parser.add_argument('--max-videos-to-save', type=int, default=2, help='max_videos for saving')
+    parser.add_argument('--max-videos-to-save', type=int, default=5, help='max_videos for saving')
     parser.add_argument('--checkpoint-interval', type=int, default=10000, help='Checkpoint interval (episodes)')
     parser.add_argument('--checkpoint-path', type=str, default='', help='Load model checkpoint')
     parser.add_argument('--restore', action='store_true', help='restores model from checkpoint')
