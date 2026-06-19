@@ -1,13 +1,12 @@
+from __future__ import annotations
+
 from typing import Callable, List, Optional, Sequence, cast
 from copy import deepcopy
 
-import hydra
 import numpy as np
-import omegaconf
 import torch
 import torch.distributions
 
-import mbrl.models
 import mbrl.types
 import mbrl.util.math
 from torch.serialization import save
@@ -16,6 +15,13 @@ from .core import Agent, complete_agent_cfg
 
 from .trajectory_opt import Optimizer
 from .adam_projected import Adam
+
+try:
+    import hydra
+    import omegaconf
+except ModuleNotFoundError:
+    hydra = None
+    omegaconf = None
 
 class GradientOptimizer(Optimizer):
 
@@ -299,6 +305,8 @@ class TrajectoryOptimizer:
     ):
         optimizer_cfg.lower_bound = np.tile(action_lb, (planning_horizon, 1)).tolist()
         optimizer_cfg.upper_bound = np.tile(action_ub, (planning_horizon, 1)).tolist()
+        if hydra is None:
+            raise ModuleNotFoundError("hydra is required to instantiate TrajectoryOptimizer")
         self.optimizer: Optimizer = hydra.utils.instantiate(optimizer_cfg)
         self.initial_solution = (
             ((torch.tensor(action_lb) + torch.tensor(action_ub)) / 2)
@@ -540,6 +548,8 @@ def create_trajectory_optim_agent_for_model(
 
     """
     complete_agent_cfg(model_env, agent_cfg)
+    if hydra is None:
+        raise ModuleNotFoundError("hydra is required to instantiate TrajectoryOptimizerAgent")
     agent = hydra.utils.instantiate(agent_cfg, _recursive_=False)
 
     def reward_fun(initial_state, action_sequences, sample=True):

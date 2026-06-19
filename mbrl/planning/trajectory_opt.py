@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 #
 # This source code is licensed under the MIT license found in the
@@ -5,17 +7,21 @@
 import time
 from typing import Callable, List, Optional, Sequence, cast
 
-import hydra
 import numpy as np
-import omegaconf
 import torch
 import torch.distributions
 
-import mbrl.models
 import mbrl.types
 import mbrl.util.math
 
 from .core import Agent, complete_agent_cfg
+
+try:
+    import hydra
+    import omegaconf
+except ModuleNotFoundError:
+    hydra = None
+    omegaconf = None
 
 
 class Optimizer:
@@ -190,6 +196,8 @@ class TrajectoryOptimizer:
     ):
         optimizer_cfg.lower_bound = np.tile(action_lb, (planning_horizon, 1)).tolist()
         optimizer_cfg.upper_bound = np.tile(action_ub, (planning_horizon, 1)).tolist()
+        if hydra is None:
+            raise ModuleNotFoundError("hydra is required to instantiate TrajectoryOptimizer")
         self.optimizer: Optimizer = hydra.utils.instantiate(optimizer_cfg)
         self.initial_solution = (
             ((torch.tensor(action_lb) + torch.tensor(action_ub)) / 2)
@@ -397,6 +405,8 @@ def create_trajectory_optim_agent_for_model(
 
     """
     complete_agent_cfg(model_env, agent_cfg)
+    if hydra is None:
+        raise ModuleNotFoundError("hydra is required to instantiate TrajectoryOptimizerAgent")
     agent = hydra.utils.instantiate(agent_cfg, _recursive_=False)
 
     def trajectory_eval_fn(initial_state, action_sequences):

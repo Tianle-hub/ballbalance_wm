@@ -2,11 +2,13 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-from .logger import Logger
 from .replay_buffer import ReplayBuffer, TransitionIterator
 
-__all__ = [
-    "Logger",
-    "ReplayBuffer",
-    "TransitionIterator",
-]
+try:
+    from .logger import Logger
+except ModuleNotFoundError:
+    Logger = None
+
+__all__ = ["ReplayBuffer", "TransitionIterator"]
+if Logger is not None:
+    __all__.append("Logger")

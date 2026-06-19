@@ -17,6 +17,8 @@ import env_wrapper
 from replay_buffer import ReplayBuffer
 from models import RSSM, ConvEncoder, ConvDecoder, DenseDecoder, ActionDecoder
 
+import mbrl.planning as mbrl_planning
+
 if "MPLCONFIGDIR" not in os.environ:
     matplotlib_config = os.path.join(os.path.expanduser("~"), ".config", "matplotlib")
     if not os.access(os.path.dirname(matplotlib_config), os.W_OK):
@@ -75,7 +77,6 @@ class Dreamer:
                     discrete = self.args.algo == 'Dreamerv2',
                     discrete_classes = self.args.discrete_classes).to(self.device)
         stoch_feature_size = self.rssm.stoch_feature_size
-
         self.actor = ActionDecoder(
                      action_size = self.action_size,
                      stoch_size = stoch_feature_size,
@@ -289,6 +290,177 @@ class Dreamer:
 
         return  posterior, action
 
+    def _repeat_state(self, state, repeats):
+        return {
+            key: value.repeat_interleave(repeats, dim=0)
+            for key, value in state.items()
+        }
+
+    def _deterministic_imagine_step(self, prev_state, action):
+        state_action = self.rssm.act_fn(
+            self.rssm.fc_state_action(torch.cat([prev_state['stoch'], action], dim=-1))
+        )
+        deter = self.rssm.rnn(state_action, prev_state['deter'])
+        prior_embed = self.rssm.act_fn(self.rssm.fc_embed_prior(deter))
+        dist_input = self.rssm.fc_state_prior(prior_embed)
+
+        if self.rssm.discrete:
+            logits = torch.reshape(
+                dist_input,
+                (*dist_input.shape[:-1], self.rssm.stoch_size, self.rssm.discrete_classes),
+            )
+            stoch = torch.softmax(logits, dim=-1)
+            stoch = torch.reshape(stoch, (*stoch.shape[:-2], self.rssm.stoch_feature_size))
+            return {'logits': logits, 'stoch': stoch, 'deter': deter}
+
+        mean, std = torch.chunk(dist_input, 2, dim=-1)
+        std = F.softplus(std) + 0.1
+        return {'mean': mean, 'std': std, 'stoch': mean, 'deter': deter}
+
+    def latent_action_sequence_return(
+        self,
+        start_state,
+        action_sequences,
+        deterministic=True,
+        bootstrap_value=False,
+    ):
+        if action_sequences.dim() == 2:
+            action_sequences = action_sequences.unsqueeze(0)
+
+        population_size, horizon, _ = action_sequences.shape
+        state = self._repeat_state(start_state, population_size)
+        total_return = torch.zeros(population_size, 1, device=self.device)
+        discount_weight = torch.ones_like(total_return)
+
+        for t in range(horizon):
+            action = action_sequences[:, t]
+            if deterministic:
+                state = self._deterministic_imagine_step(state, action)
+            else:
+                state = self.rssm.imagine_step(state, action)
+
+            features = self.rssm.get_feat(state)
+            reward = self.reward_model.model(features)
+            reward = torch.nan_to_num(reward, nan=-1e6, posinf=1e6, neginf=-1e6)
+            total_return = total_return + discount_weight * reward
+
+            if self.args.use_disc_model:
+                continuation = torch.sigmoid(self.discount_model.model(features))
+                continuation = torch.nan_to_num(continuation, nan=0.0, posinf=1.0, neginf=0.0)
+                continuation = torch.clamp(continuation, 0.0, 1.0)
+                step_discount = self.args.discount * continuation
+            else:
+                step_discount = self.args.discount * torch.ones_like(reward)
+            discount_weight = discount_weight * step_discount
+
+        if bootstrap_value:
+            features = self.rssm.get_feat(state)
+            value = self.value_model.model(features)
+            value = torch.nan_to_num(value, nan=0.0, posinf=1e6, neginf=-1e6)
+            total_return = total_return + discount_weight * value
+
+        return total_return.squeeze(-1)
+
+    def build_cem_gd_optimizer(
+        self,
+        horizon,
+        action_low=-1.0,
+        action_high=1.0,
+        num_iterations=5,
+        elite_ratio=0.1,
+        population_size=100,
+        alpha=0.1,
+        num_top=3,
+        resample_amount=20,
+        return_mean_elites=False,
+    ):
+        action_low = np.asarray(action_low, dtype=np.float32)
+        action_high = np.asarray(action_high, dtype=np.float32)
+        if action_low.shape == ():
+            action_low = np.full((self.action_size,), action_low, dtype=np.float32)
+        if action_high.shape == ():
+            action_high = np.full((self.action_size,), action_high, dtype=np.float32)
+
+        lower_bound = np.tile(action_low, (horizon, 1))
+        upper_bound = np.tile(action_high, (horizon, 1))
+        return mbrl_planning.GradientOptimizer(
+            num_iterations=num_iterations,
+            elite_ratio=elite_ratio,
+            population_size=population_size,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            alpha=alpha,
+            device=self.device,
+            return_mean_elites=return_mean_elites,
+            num_top=num_top,
+            resample_amount=resample_amount,
+        )
+
+    def act_with_cem_gd_planner(
+        self,
+        obs,
+        prev_state,
+        prev_action,
+        optimizer=None,
+        horizon=None,
+        x0=None,
+        use_opt=True,
+        deterministic=True,
+        bootstrap_value=False,
+        explore=False,
+        return_plan=False,
+    ):
+        if horizon is None:
+            horizon = self.args.imagine_horizon
+        if optimizer is None:
+            optimizer = self.build_cem_gd_optimizer(horizon)
+
+        obs = obs['image']
+        obs = torch.tensor(obs.copy(), dtype=torch.float32).to(self.device).unsqueeze(0)
+        obs_embed = self.obs_encoder(preprocess_obs(obs))
+        _, posterior = self.rssm.observe_step(prev_state, prev_action, obs_embed)
+        posterior = self.rssm.detach_state(posterior)
+
+        if x0 is None:
+            x0 = torch.zeros(horizon, self.action_size, device=self.device)
+        else:
+            x0 = x0.to(self.device)
+
+        with FreezeParameters(self.world_model_modules + self.value_modules):
+            def reward_fun(action_sequences, sample=True):
+                return self.latent_action_sequence_return(
+                    posterior,
+                    action_sequences,
+                    deterministic=deterministic or not sample,
+                    bootstrap_value=bootstrap_value,
+                )
+
+            def cost_fun(action_sequences, use_grad=False):
+                return -self.latent_action_sequence_return(
+                    posterior,
+                    action_sequences,
+                    deterministic=True,
+                    bootstrap_value=bootstrap_value,
+                )
+
+            plan = optimizer.optimize(
+                reward_fun,
+                cost_fun,
+                x0=x0,
+                default_x0=torch.zeros_like(x0),
+                use_opt=use_opt,
+            )
+
+        action = plan[0].unsqueeze(0)
+        if explore:
+            action = self.actor.add_exploration(action, self.args.action_noise)
+        action = torch.clamp(action, -1.0, 1.0)
+
+        if return_plan:
+            return posterior, action, plan.detach()
+        return posterior, action
+
+
     def act_and_collect_data(self, env, collect_steps):
 
         obs = env.reset()
@@ -377,6 +549,7 @@ class Dreamer:
             {'rssm' : self.rssm.state_dict(),
             'actor': self.actor.state_dict(),
             'reward_model': self.reward_model.state_dict(),
+            'value_model': self.value_model.state_dict(),
             'obs_encoder': self.obs_encoder.state_dict(),
             'obs_decoder': self.obs_decoder.state_dict(),
             'discount_model': self.discount_model.state_dict() if self.args.use_disc_model else None,
@@ -390,9 +563,11 @@ class Dreamer:
         self.rssm.load_state_dict(checkpoint['rssm'])
         self.actor.load_state_dict(checkpoint['actor'])
         self.reward_model.load_state_dict(checkpoint['reward_model'])
+        if 'value_model' in checkpoint:
+            self.value_model.load_state_dict(checkpoint['value_model'])
         self.obs_encoder.load_state_dict(checkpoint['obs_encoder'])
         self.obs_decoder.load_state_dict(checkpoint['obs_decoder'])
-        if self.args.use_disc_model and (checkpoint['discount_model'] is not None):
+        if self.args.use_disc_model and (checkpoint.get('discount_model') is not None):
             self.discount_model.load_state_dict(checkpoint['discount_model'])
 
         self.world_model_opt.load_state_dict(checkpoint['world_model_optimizer'])

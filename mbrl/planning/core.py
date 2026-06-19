@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 #
 # This source code is licensed under the MIT license found in the
@@ -6,15 +8,23 @@ import abc
 import pathlib
 from typing import Union
 
-import gym
-import hydra
 import numpy as np
-import omegaconf
 import torch
 import torch.distributions
 
-import mbrl.models
 import mbrl.types
+
+try:
+    import gym
+except ModuleNotFoundError:
+    import gymnasium as gym
+
+try:
+    import hydra
+    import omegaconf
+except ModuleNotFoundError:
+    hydra = None
+    omegaconf = None
 
 
 class Agent:
@@ -129,6 +139,8 @@ def load_agent(agent_path: Union[str, pathlib.Path], env: gym.Env) -> Agent:
     Returns:
         (Agent): the new agent.
     """
+    if hydra is None or omegaconf is None:
+        raise ModuleNotFoundError("hydra and omegaconf are required to load agents")
     agent_path = pathlib.Path(agent_path)
     cfg = omegaconf.OmegaConf.load(agent_path / ".hydra" / "config.yaml")
 
