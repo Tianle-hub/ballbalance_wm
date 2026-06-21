@@ -1,5 +1,11 @@
 # Final PlaNet Workflow
 
+This codebase is made by codex and human in reference reading -- ai coding - human reviewing - more ai coding -- (multiple rounds) -- human summary and cleaning fashion.  
+
+Main Reference:
+1. https://arxiv.org/pdf/1811.04551.pdf
+2. https://medium.com/%40lukasbierling/recurrent-state-space-models-pytorch-implementation-ba5d7e063d11
+
 This branch trains the RSSM with reward & continual model:
 
 ```text
