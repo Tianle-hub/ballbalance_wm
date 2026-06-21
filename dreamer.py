@@ -328,9 +328,9 @@ class Dreamer:
             action_sequences = action_sequences.unsqueeze(0)
 
         population_size, horizon, _ = action_sequences.shape
-        state = self._repeat_state(start_state, population_size)
+        state = self._repeat_state(start_state, population_size) # start is the current posterior state
         total_return = torch.zeros(population_size, 1, device=self.device)
-        discount_weight = torch.ones_like(total_return)
+        discount_weight = torch.ones_like(total_return) # one for default?
 
         for t in range(horizon):
             action = action_sequences[:, t]
@@ -439,7 +439,7 @@ class Dreamer:
                 return -self.latent_action_sequence_return(
                     posterior,
                     action_sequences,
-                    deterministic=True,
+                    deterministic=True, # for optimization with GD, must determintisitc
                     bootstrap_value=bootstrap_value,
                 )
 

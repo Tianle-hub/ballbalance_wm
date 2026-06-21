@@ -57,6 +57,8 @@ It renders the 6D ball state to a 64x64 RGB observation for the existing convolu
 ```bash
 python dreamer.py --env ball-balance --algo Dreamerv2 --exp ball_eval --evaluate --restore --checkpoint-path '<your_ckpt_path>'
 ```
+
+
 ### Google_Colab
  I have added a colab file [![Open Dreamer in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/17C4w5-LVK_xiLjcLMrFNY_PwncHW-QfL?usp=sharing)  to train and evaluate on freely avilable GPUs on google colab for quick reproducilibilty.
 
@@ -81,6 +83,11 @@ Evaluation is done at every 10k steps during training for 10 eval episodes.
 Plots show average returns as solid lines and std deviations as shaded areas
 
 ![dreamer_eval](results/dreamer_eval.jpg)
+
+# TODO: add my dreamerV1 v2 result of ball env following with code command and gif(result) if have, do this part later
+
+# TODO: add my dreamerV2 dynamics model + CEM-GD planner result here, add saved_online_gif=outputs/latent_cem_gd_online_20260621_081323.gif result
+
 
 ## Acknowledgements
 This code is heavily inpsired by following open-source works

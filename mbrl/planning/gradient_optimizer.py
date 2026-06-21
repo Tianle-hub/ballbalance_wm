@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Sequence, cast
 from copy import deepcopy
+import time
 
 import numpy as np
 import torch
@@ -58,6 +59,15 @@ class GradientOptimizer(Optimizer):
         self.device = device
         assert num_top <= self.elite_num
         self.num_top = num_top
+        self.last_cem_stats = {}
+        self.last_gd_stats = {}
+        self.last_timing = {}
+
+    def _sync_timer(self):
+        device = torch.device(self.device)
+        if device.type == 'cuda' and torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+        return time.perf_counter()
 
     def get_top_trajectories(
         self,
@@ -74,6 +84,7 @@ class GradientOptimizer(Optimizer):
         """
         
         """
+        start_time = self._sync_timer()
         mu = x0.clone()
         var = self.initial_var.clone()
 
@@ -93,7 +104,10 @@ class GradientOptimizer(Optimizer):
         population = torch.zeros((amount,) + x0.shape).to(
             device=self.device
         )
-        for i in range(n_iter):
+        iteration_times = []
+        reward_eval_times = []
+        for iter_idx in range(n_iter):
+            iter_start = self._sync_timer()
             lb_dist = mu - self.lower_bound
             ub_dist = self.upper_bound - mu
             mv = torch.min(torch.square(lb_dist / 2), torch.square(ub_dist / 2))
@@ -102,10 +116,12 @@ class GradientOptimizer(Optimizer):
             population = mbrl.util.math.truncated_normal_(population)
             population = population * torch.sqrt(constrained_var) + mu
 
+            reward_eval_start = self._sync_timer()
             values = reward_fun(population, sample=True)
+            reward_eval_times.append(self._sync_timer() - reward_eval_start)
 
             if callback is not None:
-                callback(population, values, i)
+                callback(population, values, iter_idx)
 
             # filter out NaN values
             values[values.isnan()] = -1e-10
@@ -121,14 +137,28 @@ class GradientOptimizer(Optimizer):
             mu = self.alpha * mu + (1 - self.alpha) * new_mu
             var = self.alpha * var + (1 - self.alpha) * new_var
 
-            for i in range(self.num_top):
+            for top_idx in range(self.num_top):
                 # keep track of self.num_top trajectories
-                s = best_values[i] > top_rewards
+                s = best_values[top_idx] > top_rewards
                 if np.any(s):
                     mask = np.ma.masked_array(top_rewards, mask=~s)
                     highest_idx = np.argmax(mask)
-                    top_rewards[highest_idx] = best_values[i]
-                    top_sols[highest_idx] = population[elite_idx[i]].detach().clone()
+                    top_rewards[highest_idx] = best_values[top_idx]
+                    top_sols[highest_idx] = population[elite_idx[top_idx]].detach().clone()
+            iteration_times.append(self._sync_timer() - iter_start)
+
+        total_time = self._sync_timer() - start_time
+        self.last_cem_stats = {
+            'time': total_time,
+            'iterations': n_iter,
+            'population_amount': amount,
+            'elite_num': int(elite_num),
+            'is_resampling': bool(is_resampling),
+            'init': bool(init),
+            'reward_eval_time': float(np.sum(reward_eval_times)) if reward_eval_times else 0.0,
+            'iteration_time_mean': float(np.mean(iteration_times)) if iteration_times else 0.0,
+            'iteration_time_max': float(np.max(iteration_times)) if iteration_times else 0.0,
+        }
 
         if use_opt or not self.return_mean_elites:
             return top_sols
@@ -137,8 +167,9 @@ class GradientOptimizer(Optimizer):
 
     def optimize_trajectory_batch(self, obj_fun, action_sequences_list,
         start_lr=0.01, factor_shrink=1.5, max_tries=7, max_iterations=15):
+        start_time = self._sync_timer()
         for action_sequences in action_sequences_list:
-            action_sequences.requires_grad = True
+            action_sequences.requires_grad = True # this makes action sequence become opt variables
 
         n = len(action_sequences_list)
 
@@ -157,23 +188,41 @@ class GradientOptimizer(Optimizer):
         current_iteration = np.array([0 for i in range(n)])
         done = np.array([False for i in range(n)])
 
+        objective_time = 0.0
+        backward_time = 0.0
+        adam_step_time = 0.0
+        unsuccessful_steps = 0
+        successful_steps = 0
+        line_search_failures = 0
+        loop_count = 0
+
         action_sequences_batch = torch.stack(action_sequences_list)
+        objective_start = self._sync_timer()
         objective_all = obj_fun(action_sequences_batch, True)
+        objective_time += self._sync_timer() - objective_start
 
         current_objective = [objective_all[i] for i in range(n)]
 
+        backward_start = self._sync_timer()
         for i in range(n):
             action_sequences = action_sequences_list[i]
             saved_parameters[i] = action_sequences.detach().clone()
             saved_opt_states[i] = deepcopy(optimizer.state[action_sequences])
             objective_all[i].backward(retain_graph=(i != n - 1))
-
+        backward_time += self._sync_timer() - backward_start
+        
+        
         while not np.all(done):
+            loop_count += 1
+            adam_start = self._sync_timer()
             optimizer.step()
+            adam_step_time += self._sync_timer() - adam_start
 
             # Compute objectives of all trajectories after stepping
             action_sequences_batch = torch.stack(action_sequences_list)
+            objective_start = self._sync_timer()
             objective_all = obj_fun(action_sequences_batch, True)
+            objective_time += self._sync_timer() - objective_start
 
             backwards_pass = []
 
@@ -182,6 +231,7 @@ class GradientOptimizer(Optimizer):
                     continue
                 action_sequences = action_sequences_list[i]
                 if objective_all[i] > current_objective[i]:
+                    unsuccessful_steps += 1
                     # If after the step, the cost is higher, then undo
                     action_sequences.data = saved_parameters[i].data.clone()
                     optimizer.state[action_sequences] = deepcopy(saved_opt_states[i])
@@ -191,9 +241,11 @@ class GradientOptimizer(Optimizer):
                         # line search failed, mark action sequence as done
                         action_sequences.grad = None
                         done[i] = True
+                        line_search_failures += 1
                 else:
                     # successfully completed step.
                     # Save current state, and compute gradients
+                    successful_steps += 1
                     saved_parameters[i] = action_sequences.detach().clone()
                     saved_opt_states[i] = deepcopy(optimizer.state[action_sequences])
                     current_objective[i] = objective_all[i]
@@ -208,7 +260,24 @@ class GradientOptimizer(Optimizer):
                 
             to_compute = [objective_all[i] for i in backwards_pass]
             grads = [(torch.empty_like(objective_all[i])*0 + 1).to(self.device) for i in backwards_pass]
-            torch.autograd.backward(to_compute, grads)
+            if to_compute:
+                backward_start = self._sync_timer()
+                torch.autograd.backward(to_compute, grads)
+                backward_time += self._sync_timer() - backward_start
+
+        total_time = self._sync_timer() - start_time
+        self.last_gd_stats = {
+            'time': total_time,
+            'num_trajectories': n,
+            'loop_count': loop_count,
+            'objective_time': objective_time,
+            'backward_time': backward_time,
+            'adam_step_time': adam_step_time,
+            'successful_steps': successful_steps,
+            'unsuccessful_steps': unsuccessful_steps,
+            'line_search_failures': line_search_failures,
+            'iterations_per_trajectory': current_iteration.astype(int).tolist(),
+        }
         
         return [traj.detach() for traj in action_sequences_list]
 
@@ -248,22 +317,41 @@ class GradientOptimizer(Optimizer):
         Returns:
             (torch.Tensor): the best solution found. Shape (horizon x action dim)
         """
+        total_start = self._sync_timer()
         init = (trial_step == 0)
-
+        cem_start = self._sync_timer()
         top_trajectories = self.get_top_trajectories(reward_fun, x0, default_x0, 
             callback, use_opt=use_opt, is_resampling=is_resampling, flag=False, init=init)
-
+        cem_time = self._sync_timer() - cem_start
+        # so if use_opt = True, we are in cem-gd
+        gd_time = 0.0
         if use_opt:
+            gd_start = self._sync_timer()
             top_trajectories = self.optimize_trajectory_batch(obj_fun, top_trajectories)
+            gd_time = self._sync_timer() - gd_start
         
         trajectory_batch = torch.stack(top_trajectories)
+        final_eval_start = self._sync_timer()
         batch_rew = reward_fun(trajectory_batch, sample=False)
+        final_eval_time = self._sync_timer() - final_eval_start
         i = torch.argmax(batch_rew)
         best_trajectory = trajectory_batch[i]
 
         if torch.any(best_trajectory.isnan()) or torch.any(best_trajectory.isinf()):
             best_trajectory = x0
         best_trajectory = torch.squeeze(best_trajectory, dim=0)
+        self.last_timing = {
+            'total_time': self._sync_timer() - total_start,
+            'cem_time': cem_time,
+            'gd_time': gd_time,
+            'final_eval_time': final_eval_time,
+            'use_opt': bool(use_opt),
+            'init': bool(init),
+            'selected_index': int(i.detach().cpu().item()),
+            'best_reward': float(batch_rew[i].detach().cpu().item()),
+            'cem': dict(self.last_cem_stats),
+            'gd': dict(self.last_gd_stats) if use_opt else {},
+        }
         return best_trajectory
 
 
