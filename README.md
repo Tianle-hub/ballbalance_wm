@@ -113,6 +113,26 @@ python scripts/eval_rssm_prediction.py \
   --batch-size 128
 ```
 
+Latest result from `runs/rssm_ball_v5_long_wiz_reward_continual_model`:
+
+| Metric | Value |
+| --- | ---: |
+| posterior reconstruction MSE | 0.000570 |
+| one-step prior MSE | 0.000572 |
+| open-loop dynamics MSE | 0.007157 |
+| posterior reward MSE | 0.427284 |
+| open-loop reward MSE | 0.326146 |
+| posterior continuation MSE | 0.0000129 |
+| open-loop continuation MSE | 0.000563 |
+
+![RSSM v5 open-loop dynamics MSE](results/rssm_v5_open_loop_dynamics_mse_curve.png)
+
+![RSSM v5 open-loop reward MSE](results/rssm_v5_open_loop_reward_mse_curve.png)
+
+![RSSM v5 open-loop continuation MSE](results/rssm_v5_open_loop_continuation_mse_curve.png)
+
+![RSSM v5 reward and continuation open-loop MSE](results/rssm_v5_open_loop_reward_continuation_mse_curve.png)
+
 
 To inspect what the reward model has learned over the board, sample transitions from the buffer dataset and average
 true, posterior-predicted, and one-step-prior-predicted reward by next ball position. Each `(x, y)` bin averages over
@@ -127,6 +147,20 @@ python scripts/eval_reward_heatmap.py \
   --bins 50 \
   --position-limit 0.5
 ```
+
+Reward heatmap result:
+
+| Metric | Value |
+| --- | ---: |
+| sampled transitions | 60,102 |
+| filled position bins | 2,184 |
+| mean true reward | 0.738892 |
+| mean posterior reward | 0.742141 |
+| mean prior reward | 0.742040 |
+| posterior reward MSE | 0.000206 |
+| prior reward MSE | 0.000216 |
+
+![RSSM v5 reward heatmap](results/rssm_v5_reward_position_heatmaps.png)
 
 ## 3.2 Evaluate RSSM based mpc planner
 
@@ -147,6 +181,20 @@ python scripts/eval_rssm_mpc.py \
   --num-iterations 4
 ```
 
+Online center-task result with the same checkpoint and CEM planner (`5` episodes, `150` max steps):
+
+| Metric | Value |
+| --- | ---: |
+| success rate | 100% |
+| fall rate | 0% |
+| final distance | 0.0099 |
+| last-50 distance | 0.0122 |
+| total reward | 136.21 |
+| mean compute time / action | 16.7 ms |
+| control frequency | 60.0 Hz |
+
+![RSSM v5 online MPC with CEM](results/rssm_v5_online_mpc_cem.gif)
+
 CEM with gradient refinement:
 
 ```bash
@@ -166,20 +214,20 @@ python scripts/eval_rssm_mpc.py \
   --gd-lr 0.01
 ```
 
-To compare center-stabilization methods from identical random initial states, run the full baseline comparison:
+Online center-task result with CEM-GD (`5` episodes, `100` max steps):
 
-```bash
-python scripts/compare_center_baselines.py \
-  --checkpoint runs/rssm_ball_v5_long_wiz_reward_continual_model/checkpoints/best.pt \
-  --methods pd,lqr,mpc_cem,mpc_mppi,mpc_gd,rssm_cem,rssm_cem_gd \
-  --num-episodes 20 \
-  --max-steps 300 \
-  --horizon 25 \
-  --num-candidates 1024 \
-  --num-elites 100 \
-  --num-iterations 4 \
-  --planning-objective reward
-```
+| Metric | Value |
+| --- | ---: |
+| success rate | 80% |
+| fall rate | 0% |
+| final distance | 0.0314 |
+| last-50 distance | 0.0337 |
+| total reward | 86.31 |
+| mean compute time / action | 172.1 ms |
+| control frequency | 5.8 Hz |
+
+![RSSM v5 online MPC with CEM-GD](results/rssm_v5_online_mpc_cem_gd.gif)
+
 To compare center-stabilization methods from identical random initial states, run the full baseline comparison:
 
 ```bash
@@ -215,6 +263,20 @@ The comparison includes control-response metrics:
 - `total_compute_time`: total wall-clock planning time per episode.
 - `control_frequency_hz`: inverse of mean per-step compute time.
 - `compute_real_time_factor`: total compute time divided by simulated episode time; values below `1` are faster than real time.
+
+Latest center-baseline comparison result:
+
+| Method | Success | Final dist. | Steady error | Settling time | Mean compute |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PD | 100% | 0.00068 | 0.00213 | 1.323 s | 0.003 ms |
+| LQR | 100% | 0.00000 | 0.00000 | 0.590 s | 0.003 ms |
+| analytic MPC | 100% | 0.00039 | 0.00046 | 0.513 s | 13.0 ms |
+| RSSM CEM | 100% | 0.00494 | 0.00549 | 0.725 s | 20.5 ms |
+| RSSM CEM-GD | 100% | 0.00480 | 0.00434 | 0.769 s | 179.9 ms |
+
+![RSSM v5 center baseline control metrics](results/rssm_v5_control_metric_summary.png)
+
+![RSSM v5 steady error versus settling time](results/rssm_v5_steady_error_vs_settling_time.png)
 
 
 [Optional]
@@ -273,7 +335,11 @@ python scripts/online_mpc_visualizer.py \
 
 or   
 ```bash
---planner-type cem, cem-gd
+--planner-type cem, cem_gd
 --show-online show, not-show
 ```
 
+Saved online dashboard examples from the reward-aware RSSM checkpoint:
+
+- CEM: `results/rssm_v5_online_mpc_cem.gif`
+- CEM-GD: `results/rssm_v5_online_mpc_cem_gd.gif`
