@@ -84,9 +84,77 @@ Plots show average returns as solid lines and std deviations as shaded areas
 
 ![dreamer_eval](results/dreamer_eval.jpg)
 
-# TODO: add my dreamerV1 v2 result of ball env following with code command and gif(result) if have, do this part later
+## Ball Balance Results
 
-# TODO: add my dreamerV2 dynamics model + CEM-GD planner result here, add saved_online_gif=outputs/latent_cem_gd_online_20260621_081323.gif result
+The commands below evaluate the latest saved ball-balance checkpoints with the
+actor learned by Dreamer. `run_dreamer.py` is a visualization-focused evaluator:
+it runs the same restored actor as `dreamer.py --evaluate`, shows the online
+dashboard by default, and saves the dashboard GIF plus metrics JSON.
+
+### DreamerV1 actor policy
+
+```bash
+.venv/bin/python run_dreamer.py \
+  --checkpoint-path data/ball-balance_Dreamerv1_ball_default_18-06-2026-17-43-42/ckpts/20000_ckpt.pt \
+  --env ball-balance \
+  --algo Dreamerv1 \
+  --num-episodes 5 \
+  --max-steps 300 \
+  --time-limit 300 \
+  --no-gpu \
+  --show-online not-show \
+  --fps 10 \
+  --gif-stride 5 \
+  --out-dir outputs/dreamer_ball_v1 \
+  --gif-path results/dreamer_v1_ball_policy.gif
+```
+
+Result over 5 episodes: return `230.007 ± 15.867` (`min=209.038`, `max=250.536`),
+mean final distance `0.1436 ± 0.0135`, no falls. Each episode ran `150` action-repeat
+steps and ended by time-limit truncation.
+
+![DreamerV1 ball-balance policy](results/dreamer_v1_ball_policy.gif)
+
+### DreamerV2 actor policy
+
+```bash
+.venv/bin/python run_dreamer.py \
+  --checkpoint-path data/ball-balance_Dreamerv2_ball_default_18-06-2026-16-48-16/ckpts/250000_ckpt.pt \
+  --env ball-balance \
+  --algo Dreamerv2 \
+  --num-episodes 5 \
+  --max-steps 300 \
+  --time-limit 300 \
+  --no-gpu \
+  --show-online not-show \
+  --fps 10 \
+  --gif-stride 5 \
+  --out-dir outputs/dreamer_ball_v2 \
+  --gif-path results/dreamer_v2_ball_policy.gif
+```
+
+Result over 5 episodes: return `266.705 ± 9.937` (`min=255.456`, `max=281.571`),
+mean final distance `0.0321 ± 0.0088`, no falls. Each episode ran `150` action-repeat
+steps and ended by time-limit truncation.
+
+![DreamerV2 ball-balance policy](results/dreamer_v2_ball_policy.gif)
+
+### DreamerV2 world model with latent CEM-GD planner
+
+The latent CEM-GD runner evaluates action sequences directly in RSSM latent
+space using the learned dynamics, reward model, and optional continuation model.
+It executes only the first action from each optimized sequence, then replans.
+
+```bash
+.venv/bin/python run_latent_cem_gd.py \
+  --checkpoint-path data/ball-balance_Dreamerv2_ball_default_18-06-2026-16-48-16/ckpts/250000_ckpt.pt \
+  --episodes 1 \
+  --online
+```
+
+Saved online planner dashboard:
+
+![DreamerV2 latent CEM-GD planner](results/latent_cem_gd_online.gif)
 
 
 ## Acknowledgements

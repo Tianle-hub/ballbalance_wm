@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--show-online", choices=["show", "not-show"], default="show")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--gif-stride", type=int, default=1)
     parser.add_argument("--gif-path", type=str, default="")
     parser.add_argument("--out-dir", type=str, default="")
     parser.add_argument("--seed", type=int, default=1)
@@ -253,18 +254,21 @@ class BallPolicyDashboard:
             self.fig.canvas.draw_idle()
             self.plt.pause(seconds)
 
-    def save_gif(self, episodes: list[dict[str, object]], gif_path: Path, fps: int) -> None:
+    def save_gif(self, episodes: list[dict[str, object]], gif_path: Path, fps: int, stride: int = 1) -> None:
         from matplotlib.animation import FuncAnimation, PillowWriter
 
         max_frames = max(len(episode["states"]) for episode in episodes)
+        frame_indices = list(range(0, max_frames, max(1, stride)))
+        if frame_indices[-1] != max_frames - 1:
+            frame_indices.append(max_frames - 1)
 
-        def update(frame: int):
+        def update(frame_idx: int):
             artists = []
             for row, episode in enumerate(episodes):
-                artists.extend(self.update_episode(row, episode, upto=frame + 1))
+                artists.extend(self.update_episode(row, episode, upto=frame_idx + 1))
             return artists
 
-        animation = FuncAnimation(self.fig, update, frames=max_frames, interval=1000 / fps, blit=False)
+        animation = FuncAnimation(self.fig, update, frames=frame_indices, interval=1000 / fps, blit=False)
         gif_path.parent.mkdir(parents=True, exist_ok=True)
         if gif_path.exists():
             gif_path.unlink()
@@ -403,7 +407,7 @@ def main() -> None:
 
     metrics = summarize_episodes(episodes)
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    dashboard.save_gif(episodes, gif_path, args.fps)
+    dashboard.save_gif(episodes, gif_path, args.fps, stride=args.gif_stride)
     print(f"Done. Mean return: {metrics['mean_return']:.3f}")
 
 
