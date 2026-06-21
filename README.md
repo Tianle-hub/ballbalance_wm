@@ -145,6 +145,27 @@ The latent CEM-GD runner evaluates action sequences directly in RSSM latent
 space using the learned dynamics, reward model, and optional continuation model.
 It executes only the first action from each optimized sequence, then replans.
 
+The local `mbrl/` planning utilities used for this experiment are adapted from
+the public implementation of **CEM-GD: Cross-Entropy Method with Gradient Descent
+Planner for Model-Based Reinforcement Learning** by Huang et al.:
+[paper](https://arxiv.org/abs/2112.07746),
+[code](https://github.com/KevinHuang8/CEM-GD). This repo keeps the useful
+trajectory-optimization pieces and connects them to Dreamer's RSSM latent world
+model instead of a PETS-style flat state dynamics model.
+
+The core implementation is `mbrl/planning/gradient_optimizer.py`.
+`GradientOptimizer.get_top_trajectories()` first performs the CEM part: it keeps
+a Gaussian-like distribution over full action sequences, samples a population of
+candidate plans, evaluates each plan with the learned rollout objective, keeps
+the elite plans, and updates the search mean/variance from those elites.
+If `use_opt=True`, `optimize_trajectory_batch()` then performs the GD part:
+the top CEM action sequences become differentiable PyTorch tensors
+(`requires_grad=True`), the planner backpropagates through the RSSM transition,
+reward model, and continuation model to compute `d cost / d actions`, and a
+projected Adam step refines the action sequences while respecting action bounds.
+Finally, MPC executes only the first action from the best refined sequence and
+replans at the next environment step.
+
 ```bash
 .venv/bin/python run_latent_cem_gd.py \
   --checkpoint-path data/ball-balance_Dreamerv2_ball_default_18-06-2026-16-48-16/ckpts/250000_ckpt.pt \
