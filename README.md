@@ -1,5 +1,7 @@
 # Dreamer
 
+This branch is revised based on https://github.com/adityabingi/Dreamer, key changes applied on reinforce loss and CEM-GD planner (from https://github.com/KevinHuang8/CEM-GD)
+
 Dreamer is a visual Model-Based Reinforcement algorithm, that learns a world model which captures latent dynamics from high-level pixel images and trains a control agent entirely in imagined rollouts from the learned world model.
 
 This work is my attempt at reproducing Dreamerv1 & v2 papers in pytorch specifically for continuous control tasks in deepmind control suite.
