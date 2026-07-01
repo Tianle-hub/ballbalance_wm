@@ -41,9 +41,13 @@ Code structure is similar to original work by Danijar Hafner in Tensorflow
 All the hyperparameters are listed in main.py and are avaialble as command line args.
 
 #### For training
-`python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train`
+`.venv-dm-control/bin/python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train`
 #### For Evaluation
-`python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'eval' --evaluate --restore --checkpoint-path '<your_ckpt_path>'`
+`.venv-dm-control/bin/python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'eval' --evaluate --restore --checkpoint-path '<your_ckpt_path>'`
+#### For training with replay snapshots
+`.venv-dm-control/bin/python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train --save-replay`
+#### For resuming training
+`.venv-dm-control/bin/python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train --resume-training --resume-run-dir '<your_run_dir>' --total_steps 5000000`
 
 #### Ball balance environment
 The local analytical ball-board environment is also available to this pixel Dreamer runner through `--env ball-balance`.

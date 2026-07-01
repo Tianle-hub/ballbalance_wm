@@ -30,6 +30,39 @@ from utils import *
 
 os.environ['MUJOCO_GL'] = 'egl'
 
+def infer_step_from_checkpoint_path(ckpt_path):
+    basename = os.path.basename(ckpt_path)
+    suffix = '_ckpt.pt'
+    if basename.endswith(suffix):
+        step_text = basename[:-len(suffix)]
+        if step_text.isdigit():
+            return int(step_text)
+    return 0
+
+def latest_checkpoint(run_dir):
+    ckpt_dir = os.path.join(run_dir, 'ckpts')
+    if not os.path.isdir(ckpt_dir):
+        return ''
+
+    candidates = []
+    for filename in os.listdir(ckpt_dir):
+        path = os.path.join(ckpt_dir, filename)
+        if os.path.isfile(path):
+            step = infer_step_from_checkpoint_path(path)
+            if step:
+                candidates.append((step, path))
+    if not candidates:
+        return ''
+    return max(candidates, key=lambda item: item[0])[1]
+
+def default_replay_path(logdir):
+    return os.path.join(logdir, 'replay', 'latest.npz')
+
+def replay_path_from_checkpoint(ckpt_path):
+    ckpt_dir = os.path.dirname(os.path.abspath(ckpt_path))
+    run_dir = os.path.dirname(ckpt_dir)
+    return default_replay_path(run_dir)
+
 def make_env(args):
 
     if args.env in {'ball-balance', 'ball_balance', 'ball'}:
@@ -60,6 +93,7 @@ class Dreamer:
         self.device = device
         self.restore = args.restore
         self.restore_path = args.checkpoint_path
+        self.restored_global_step = 0
         self.data_buffer = ReplayBuffer(self.args.buffer_size, self.obs_shape, self.action_size,
                                                     self.args.train_seq_len, self.args.batch_size)
 
@@ -543,7 +577,7 @@ class Dreamer:
 
         return np.array(seed_episode_rews)
 
-    def save(self, save_path):
+    def save(self, save_path, global_step=0):
 
         torch.save(
             {'rssm' : self.rssm.state_dict(),
@@ -555,7 +589,8 @@ class Dreamer:
             'discount_model': self.discount_model.state_dict() if self.args.use_disc_model else None,
             'actor_optimizer': self.actor_opt.state_dict(),
             'value_optimizer': self.value_opt.state_dict(),
-            'world_model_optimizer': self.world_model_opt.state_dict(),}, save_path)
+            'world_model_optimizer': self.world_model_opt.state_dict(),
+            'global_step': int(global_step),}, save_path)
 
     def restore_checkpoint(self, ckpt_path):
 
@@ -573,6 +608,7 @@ class Dreamer:
         self.world_model_opt.load_state_dict(checkpoint['world_model_optimizer'])
         self.actor_opt.load_state_dict(checkpoint['actor_optimizer'])
         self.value_opt.load_state_dict(checkpoint['value_optimizer'])
+        self.restored_global_step = int(checkpoint.get('global_step', 0))
 
 def main():
 
@@ -638,6 +674,12 @@ def main():
     parser.add_argument('--checkpoint-path', type=str, default='', help='Load model checkpoint')
     parser.add_argument('--restore', action='store_true', help='restores model from checkpoint')
     parser.add_argument('--experience-replay', type=str, default='', help='Load experience replay')
+    parser.add_argument('--resume-training', action='store_true', help='Resume training from a previous run/checkpoint')
+    parser.add_argument('--resume-run-dir', type=str, default='', help='Previous run directory to resume from')
+    parser.add_argument('--logdir', type=str, default='', help='Directory for logs and checkpoints')
+    parser.add_argument('--save-replay', action='store_true', help='Save replay/latest.npz for exact future training resumes')
+    parser.add_argument('--replay-save-interval', type=int, default=10000, help='Global-step interval for replay snapshots')
+    parser.add_argument('--no-resume-replay', action='store_true', help='Do not auto-load replay/latest.npz when resuming a run')
     parser.add_argument('--render', action='store_true', help='Render environment')
 
 
@@ -648,8 +690,26 @@ def main():
     if not (os.path.exists(data_path)):
         os.makedirs(data_path)
 
-    logdir = args.env + '_' + args.algo + '_' + args.exp_name + '_' + time.strftime("%d-%m-%Y-%H-%M-%S")
-    logdir = os.path.join(data_path, logdir)
+    if args.resume_training:
+        args.restore = True
+        if args.resume_run_dir:
+            args.resume_run_dir = os.path.abspath(args.resume_run_dir)
+            if not args.checkpoint_path:
+                args.checkpoint_path = latest_checkpoint(args.resume_run_dir)
+                if not args.checkpoint_path:
+                    raise FileNotFoundError(f"No checkpoints found under {args.resume_run_dir}/ckpts")
+            if not args.logdir:
+                args.logdir = args.resume_run_dir
+            if not args.experience_replay and not args.no_resume_replay:
+                replay_path = default_replay_path(args.resume_run_dir)
+                if os.path.exists(replay_path):
+                    args.experience_replay = replay_path
+
+    if args.logdir:
+        logdir = os.path.abspath(args.logdir)
+    else:
+        logdir = args.env + '_' + args.algo + '_' + args.exp_name + '_' + time.strftime("%d-%m-%Y-%H-%M-%S")
+        logdir = os.path.join(data_path, logdir)
     if not(os.path.exists(logdir)):
         os.makedirs(logdir)
 
@@ -672,24 +732,45 @@ def main():
     logger = Logger(logdir)
 
     if args.train:
-        initial_logs = OrderedDict()
-        seed_episode_rews = dreamer.collect_random_episodes(train_env, args.seed_steps//args.action_repeat)
-        global_step = dreamer.data_buffer.steps * args.action_repeat
+        restored_step = dreamer.restored_global_step
+        if args.restore and not restored_step:
+            restored_step = infer_step_from_checkpoint_path(args.checkpoint_path)
 
-        # without loss of generality intial rews for both train and eval are assumed same
-        initial_logs.update({
-            'train_avg_reward':np.mean(seed_episode_rews),
-            'train_max_reward': np.max(seed_episode_rews),
-            'train_min_reward': np.min(seed_episode_rews),
-            'train_std_reward':np.std(seed_episode_rews),
-            'eval_avg_reward': np.mean(seed_episode_rews),
-            'eval_max_reward': np.max(seed_episode_rews),
-            'eval_min_reward': np.min(seed_episode_rews),
-            'eval_std_reward':np.std(seed_episode_rews),
-            })
+        replay_loaded = False
+        if args.experience_replay:
+            dreamer.data_buffer.load(args.experience_replay)
+            replay_loaded = True
+            print(f"Loaded replay buffer from {args.experience_replay}")
+        elif args.restore:
+            candidate_replay = replay_path_from_checkpoint(args.checkpoint_path)
+            print(
+                "No replay buffer loaded. Continuing from model/optimizer weights "
+                f"and collecting {args.seed_steps} fresh seed steps. For exact future "
+                "resumes, train with --save-replay."
+            )
+            if os.path.exists(candidate_replay):
+                print(f"Replay snapshot exists at {candidate_replay}; pass --experience-replay to load it.")
 
-        logger.log_scalars(initial_logs, step=0)
-        logger.flush()
+        if not replay_loaded:
+            initial_logs = OrderedDict()
+            seed_episode_rews = dreamer.collect_random_episodes(train_env, args.seed_steps//args.action_repeat)
+
+            # without loss of generality intial rews for both train and eval are assumed same
+            initial_logs.update({
+                'train_avg_reward':np.mean(seed_episode_rews),
+                'train_max_reward': np.max(seed_episode_rews),
+                'train_min_reward': np.min(seed_episode_rews),
+                'train_std_reward':np.std(seed_episode_rews),
+                'eval_avg_reward': np.mean(seed_episode_rews),
+                'eval_max_reward': np.max(seed_episode_rews),
+                'eval_min_reward': np.min(seed_episode_rews),
+                'eval_std_reward':np.std(seed_episode_rews),
+                })
+
+            logger.log_scalars(initial_logs, step=restored_step)
+            logger.flush()
+
+        global_step = max(restored_step, dreamer.data_buffer.steps * args.action_repeat)
 
         while global_step <= args.total_steps:
 
@@ -697,11 +778,13 @@ def main():
             print(f"At global step {global_step}")
 
             logs = OrderedDict()
+            video_images = [[]]
 
             for _ in range(args.update_steps):
                 model_loss, actor_loss, value_loss = dreamer.train_one_batch()
     
             train_rews = dreamer.act_and_collect_data(train_env, args.collect_steps//args.action_repeat)
+            global_step += (args.collect_steps//args.action_repeat) * args.action_repeat
 
             logs.update({
                 'model_loss' : model_loss,
@@ -732,9 +815,13 @@ def main():
                 ckpt_dir = os.path.join(logdir, 'ckpts/')
                 if not (os.path.exists(ckpt_dir)):
                     os.makedirs(ckpt_dir)
-                dreamer.save(os.path.join(ckpt_dir,  f'{global_step}_ckpt.pt'))
+                dreamer.save(os.path.join(ckpt_dir,  f'{global_step}_ckpt.pt'), global_step)
 
-            global_step = dreamer.data_buffer.steps * args.action_repeat
+            if args.save_replay and global_step % args.replay_save_interval == 0:
+                replay_path = default_replay_path(logdir)
+                dreamer.data_buffer.save(replay_path)
+                print(f"Saved replay buffer to {replay_path}")
+
             logger.flush()
 
     elif args.evaluate:

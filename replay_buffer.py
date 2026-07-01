@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import os
 
 
 class ReplayBuffer:
@@ -50,3 +51,51 @@ class ReplayBuffer:
         l = self.seq_len
         obs,acs,rews,terms= self._retrieve_batch(np.asarray([self._sample_idx(l) for _ in range(n)]), n, l)
         return obs,acs,rews,terms
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        count = self.size if self.full else self.idx
+        np.savez_compressed(
+            path,
+            observations=self.observations[:count],
+            actions=self.actions[:count],
+            rewards=self.rewards[:count],
+            terminals=self.terminals[:count],
+            idx=np.array(self.idx, dtype=np.int64),
+            full=np.array(self.full, dtype=np.bool_),
+            steps=np.array(self.steps, dtype=np.int64),
+            episodes=np.array(self.episodes, dtype=np.int64),
+        )
+
+    def load(self, path):
+        data = np.load(path, allow_pickle=False)
+        observations = data['observations']
+        actions = data['actions']
+        rewards = data['rewards']
+        terminals = data['terminals']
+
+        count = observations.shape[0]
+        if count > self.size:
+            raise ValueError(
+                f"Replay buffer at {path} contains {count} transitions, "
+                f"but this buffer only holds {self.size}."
+            )
+        if tuple(observations.shape[1:]) != tuple(self.obs_shape):
+            raise ValueError(
+                f"Replay observations have shape {observations.shape[1:]}, "
+                f"expected {self.obs_shape}."
+            )
+        if actions.shape[-1] != self.action_size:
+            raise ValueError(
+                f"Replay actions have size {actions.shape[-1]}, "
+                f"expected {self.action_size}."
+            )
+
+        self.observations[:count] = observations
+        self.actions[:count] = actions
+        self.rewards[:count] = rewards
+        self.terminals[:count] = terminals
+        self.idx = int(data['idx']) % self.size
+        self.full = bool(data['full']) and count == self.size
+        self.steps = int(data['steps'])
+        self.episodes = int(data['episodes'])
