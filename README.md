@@ -49,6 +49,27 @@ All the hyperparameters are listed in main.py and are avaialble as command line 
 #### For resuming training
 `.venv-dm-control/bin/python dreamer.py --env 'walker-walk' --algo 'Dreamerv1' --exp 'default_hp' --train --resume-training --resume-run-dir '<your_run_dir>' --total_steps 5000000`
 
+#### For interactive dynamics-model testing
+This opens a browser viewer where the left panel is the real DMControl simulator
+and the right panel is the trained Dreamer dynamics model decoded back to pixels
+under the same actions.
+
+```bash
+.venv-dm-control/bin/python scripts/dmcontrol_dreamer_dynamics_play.py \
+  --env 'walker-walk' \
+  --algo 'Dreamerv1' \
+  --checkpoint-path '<your_ckpt_path>' \
+  --model-mode anchored \
+  --control manual
+```
+
+Open `http://127.0.0.1:7862`. Use arrow left/right to choose an action dimension,
+arrow up/down to apply action, space to pause, `R` to reset, and `P` to switch
+between manual control and the restored actor policy. `--model-mode anchored`
+shows one-step dynamics predictions corrected by each real observation.
+`--model-mode free` lets the Dreamer simulator roll forward from the reset frame
+without further observation corrections.
+
 #### Ball balance environment
 The local analytical ball-board environment is also available to this pixel Dreamer runner through `--env ball-balance`.
 It renders the 6D ball state to a 64x64 RGB observation for the existing convolutional world model.
